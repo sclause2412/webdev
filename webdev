@@ -179,7 +179,7 @@ services:
     image: local.php-${PHP_VERSION}
     build: ./.docker/php
     pull_policy: never
-    restart: no
+    restart: "no"
     user: \${CURRENT_UID:-1000:1000}
     environment:
       - XDEBUG_MODE=develop,debug
@@ -201,7 +201,7 @@ services:
   mailhog:
     container_name: webdev-mailhog
     image: mailhog/mailhog:v1.0.1
-    restart: no
+    restart: "no"
     ports:
       - 8025:8025
     networks:
@@ -210,7 +210,7 @@ services:
   mysql:
     container_name: webdev-mysql
     image: mariadb:11.1.2
-    restart: no
+    restart: "no"
     user: \${CURRENT_UID:-1000:1000}
     ports:
       - 3306:3306
@@ -227,7 +227,7 @@ services:
   phpmyadmin:
     container_name: webdev-phpmyadmin
     image: phpmyadmin/phpmyadmin:latest
-    restart: no
+    restart: "no"
     ports:
       - 8080:80
     environment:
