@@ -384,7 +384,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
         done
         if [ "$PROJ" == "-" ]; then
             cd $CURPATH
-            if [ -n "$(/usr/bin/ls -A $CURPATH)" ]; then
+            if [ -n "$(ls -A $CURPATH)" ]; then
                 echo "${RED}ATTENTION!${NC}"
                 echo "This folder was not used for web development yet and is not empty."
                 echo -n "Do you want to continue using this folder? [y/n] "
