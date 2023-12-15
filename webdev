@@ -374,7 +374,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     stop_if_up
     if [ ! -f ./.docker/framework ]; then
         # check for webdev installation in parent paths
-        PATH=$(pwd)
+        CURPATH=$(pwd)
         PROJ=-
         while [ ! "$(pwd)" == "/" ] && [ "$PROJ" == "-" ]; do
             cd ..
@@ -383,8 +383,8 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
             fi
         done
         if [ "$PROJ" == "-" ]; then
-            cd $PATH
-            if [ -n "$(/usr/bin/ls -A $PATH)" ]; then
+            cd $CURPATH
+            if [ -n "$(/usr/bin/ls -A $CURPATH)" ]; then
                 echo "${RED}ATTENTION!${NC}"
                 echo "This folder was not used for web development yet and is not empty."
                 echo -n "Do you want to continue using this folder? [y/n] "

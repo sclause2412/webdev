@@ -24,6 +24,8 @@ Here is an example for Arch Linux:
 sudo pacman -Sy docker docker-compose
 sudo systemctl enable docker.socket
 sudo systemctl start docker.socket
+sudo usermod -aG docker <username>
+sudo reboot
 ```
 
 To use this script just copy it to any folder (if you want to use it globally you can copy it to /usr/local/bin or some similar folder) and make it executable with `chmod +x webdev`
