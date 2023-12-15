@@ -1,0 +1,606 @@
+#!/bin/bash
+
+export USER_ID=$(id -u)
+export GROUP_ID=$(id -g)
+export CURRENT_UID=${USER_ID}:${GROUP_ID}
+
+DOCKER="docker"
+COMPOSE="${DOCKER} compose"
+EXEC="${COMPOSE} exec php"
+ME="$0"
+
+if test -t 1; then
+    # Determine if colors are supported...
+    ncolors=$(tput colors)
+
+    if test -n "$ncolors" && test "$ncolors" -ge 8; then
+        BOLD="$(tput bold)"
+        RED="$(tput setaf 1)"
+        YELLOW="$(tput setaf 3)"
+        GREEN="$(tput setaf 2)"
+        NC="$(tput sgr0)"
+    fi
+fi
+
+# Renders a text based list of options that can be selected by the
+# user using up, down and enter keys and returns the chosen option.
+#
+#   Arguments   : list of options, maximum of 256
+#                 "opt1" "opt2" ...
+#   Return value: selected index (0 for opt1, 1 for opt2 ...)
+function select_option {
+
+    # little helpers for terminal print control and key input
+    ESC=$(printf "\e")
+    cursor_blink_on()  { printf "$ESC[?25h"; }
+    cursor_blink_off() { printf "$ESC[?25l"; }
+    cursor_to()        { printf "$ESC[$1;${2:-1}H"; }
+    print_option()     { printf "   $1 "; }
+    print_selected()   { printf "  $ESC[7m $1 $ESC[27m"; }
+    get_cursor_row()   { IFS=';' read -sdR -p $'\E[6n' ROW COL; echo ${ROW#*[}; }
+    key_input()        {
+        read -s -n3 key 2>/dev/null >&2
+        if [ "$key" == "$ESC[A" ]; then echo up; fi
+        if [ "$key" == "$ESC[B" ]; then echo down; fi
+        if [ "$key" == "" ]; then echo enter; fi;
+    }
+
+    # initially print empty new lines (scroll down if at bottom of screen)
+    for opt; do printf "\n"; done
+
+    # determine current screen position for overwriting the options
+    local lastrow=`get_cursor_row`
+    local startrow=$(($lastrow - $#))
+
+    # ensure cursor and input echoing back on upon a ctrl+c during read -s
+    trap "cursor_blink_on; stty echo; printf '\n'; exit" 2
+    cursor_blink_off
+
+    local selected=0
+    while true; do
+        # print options by overwriting the last lines
+        local idx=0
+        for opt; do
+            cursor_to $(($startrow + $idx))
+            if [ $idx -eq $selected ]; then
+                print_selected "$opt"
+            else
+                print_option "$opt"
+            fi
+            ((idx++))
+        done
+
+        # user key control
+        case `key_input` in
+            enter) break;;
+            up)    ((selected--));
+                   if [ $selected -lt 0 ]; then selected=$(($# - 1)); fi;;
+            down)  ((selected++));
+                   if [ $selected -ge $# ]; then selected=0; fi;;
+        esac
+    done
+
+    # cursor position back to normal
+    cursor_to $lastrow
+    printf "\n"
+    cursor_blink_on
+
+    return $selected
+}
+
+function display_help {
+    echo "${YELLOW}Usage${NC}"
+    echo "  ${ME} COMMAND [arguments]"
+    echo
+    echo "Unknown commands are passed to the docker-compose binary."
+    echo
+    echo "${YELLOW}Standard commands${NC}"
+    echo "  ${RED}u${GREEN}p${NC}                      Start the development containers"
+    echo "  ${RED}d${GREEN}own${NC}                    Stop the development servers"
+    echo "  ${RED}s${GREEN}hell${NC}                   Enter a shell in the container"
+    echo "  ${RED}e${GREEN}xecute${NC} [command]       Execute any command in container"
+    echo "  ${RED}c${GREEN}omposer${NC} [command]      Run a composer command"
+    echo "  ${RED}n${GREEN}pm${NC} [command]           Run a npm command"
+    echo "  ${RED}o${GREEN}pen${NC}                    Open in browser"
+    echo "  ${RED}i${GREEN}nstall${NC}                 Install framework"
+    echo "  ${RED}p${GREEN}hp${NC}                     Change PHP version"
+    echo
+    echo "${YELLOW}Special Laravel commands${NC}"
+    echo "  ${RED}r${GREEN}un${NC}                     Start Laravel in development mode"
+    echo "  ${RED}b${GREEN}uild${NC}                   Build Laravel files for production"
+    echo "  ${RED}a${GREEN}rtisan${NC} [command]       Run an artisan command"
+    echo "  ${RED}f${GREEN}ormat${NC} [file]           Format code with Pint"
+    echo
+    echo "${YELLOW}Special reveal.js commands${NC}"
+    echo "  ${RED}b${GREEN}uild${NC}                   Build reveal.js (plugins / css)"
+    echo "  ${GREEN}e${RED}x${GREEN}port${NC}                  Compress relevant files to ZIP"
+    echo
+    exit
+}
+
+function start_if_down {
+    ID=$(${COMPOSE} ps php -q)
+    if [ -z "${ID}" ]; then
+        $0 up
+    fi
+}
+
+function stop_if_up {
+    ID=$(${DOCKER} ps -a -f name=webdev- -q)
+    if [ -n "${ID}" ]; then
+        $0 down
+        return
+    fi
+}
+
+
+function write_skeleton_index {
+    mkdir -p ./public
+    cat <<EOF >./public/index.php
+<?php
+phpinfo();
+EOF
+}
+
+function write_gitignore_file {
+    if [ ! -f .gitignore ]; then
+        return
+    fi
+    if [ -z "$(cat .gitignore | grep '/.docker')" ]; then
+        echo '/.docker' >> .gitignore
+    fi
+    if [ -z "$(cat .gitignore | grep 'docker-compose.yml')" ]; then
+        echo 'docker-compose.yml' >> .gitignore
+    fi
+}
+
+function get_php_version {
+    mkdir -p ./.docker/php
+    if [ ! -f ./.docker/php/version ]; then
+        echo "${GREEN}Select PHP version you want to use:${NC}"
+        options=("8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1")
+        select_option "${options[@]}"
+        option=${options[$?]}
+        echo $option > ./.docker/php/version
+    fi
+    PHP_VERSION=$(cat ./.docker/php/version)
+}
+
+function write_docker_compose {
+    get_php_version
+    cat <<EOF >./docker-compose.yml
+version: '3.8'
+
+# Services
+services:
+  #Apache Service with PHP
+  php:
+    container_name: webdev-php
+    image: local.php-${PHP_VERSION}
+    build: ./.docker/php
+    pull_policy: never
+    restart: no
+    user: \${CURRENT_UID:-1000:1000}
+    environment:
+      - XDEBUG_MODE=develop,debug
+      - XDEBUG_CONFIG=client_host=host.docker.internal client_port=9003 discover_client_host=true client.remote_host=host.docker.internal remote_port=9003 remote_enable=1
+    ports:
+      - 80:80
+      - 443:443
+      - 5173:5173
+    working_dir: /var/www/html
+    volumes:
+      - .:/var/www/html
+    depends_on:
+      - mysql
+    networks:
+      - webdev
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  mailhog:
+    container_name: webdev-mailhog
+    image: mailhog/mailhog:v1.0.1
+    restart: no
+    ports:
+      - 8025:8025
+    networks:
+      - webdev
+
+  mysql:
+    container_name: webdev-mysql
+    image: mariadb:11.1.2
+    restart: no
+    user: \${CURRENT_UID:-1000:1000}
+    ports:
+      - 3306:3306
+    environment:
+      - MARIADB_RANDOM_ROOT_PASSWORD=yes
+      - MARIADB_DATABASE=dev
+      - MARIADB_USER=dev
+      - MARIADB_PASSWORD=dev
+    volumes:
+      - ./.docker/mysqldata:/var/lib/mysql
+    networks:
+      - webdev
+
+  phpmyadmin:
+    container_name: webdev-phpmyadmin
+    image: phpmyadmin/phpmyadmin:latest
+    restart: no
+    ports:
+      - 8080:80
+    environment:
+      PMA_HOST: mysql
+      PMA_USER: dev
+      PMA_PASSWORD: dev
+    depends_on:
+      - mysql
+    networks:
+      - webdev
+
+networks:
+  webdev:
+    driver: bridge
+EOF
+}
+
+function write_docker_file_php {
+    get_php_version
+    mkdir -p ./.docker/php
+
+    if [ "${PHP_VERSION:0:1}" == "8" ]; then
+        XDEBUG=xdebug
+    fi
+
+    if [ "${PHP_VERSION:0:1}" == "7" ]; then
+        XDEBUG=xdebug-2.9.2
+    fi
+
+    cat <<EOF > ./.docker/php/Dockerfile
+FROM php:${PHP_VERSION}-apache
+
+WORKDIR /etc/apache2/sites-available/
+RUN sed -i 's/DocumentRoot\(.*\)/DocumentRoot\1\/public/' 000-default.conf
+RUN sed -i 's/DocumentRoot\(.*\)/DocumentRoot\1\/public/' default-ssl.conf
+WORKDIR /usr/local/etc/php/
+RUN echo '[PHP]' > php.ini
+RUN echo 'error_log = /var/www/html/.docker/php/error.log' >> php.ini
+WORKDIR /tmp
+RUN groupadd -g \${USER_ID:-1000} dev
+RUN useradd -g dev -u \${GROUP_ID:-1000} dev
+RUN mkdir /home/dev
+RUN chown dev:dev /home/dev
+RUN apt-get update
+RUN apt-get install -y gnupg
+RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
+RUN echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
+RUN apt-get update
+RUN apt-get install -y dialog
+RUN apt-get install -y ssl-cert
+RUN apt-get install -y nodejs npm
+RUN apt-get install -y gulp
+RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+RUN php composer-setup.php
+RUN php -r "unlink('composer-setup.php');"
+RUN mv composer.phar /usr/local/bin/composer
+RUN apt-get install -y libzip-dev zip unzip zlib1g-dev
+RUN docker-php-ext-install zip
+RUN apt-get install -y libpng-dev libgd3 libgd-dev libfreetype6-dev
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg
+RUN docker-php-ext-install gd
+RUN docker-php-ext-install iconv
+RUN apt-get install -y libonig-dev
+RUN docker-php-ext-install mbstring
+RUN docker-php-ext-install mysqli
+RUN docker-php-ext-install pdo_mysql
+RUN pecl install ${XDEBUG}
+RUN docker-php-ext-enable xdebug
+RUN make-ssl-cert generate-default-snakeoil
+RUN chmod 755 /etc/ssl/private
+RUN chmod 644 /etc/ssl/private/*
+RUN a2enmod rewrite
+RUN a2enmod ssl
+RUN a2ensite default-ssl
+ENV APACHE_RUN_USER=dev
+ENV APACHE_RUN_GROUP=dev
+ENV APACHE_LOG_DIR=/var/www/html/.docker/apache
+RUN echo root:root | chpasswd
+USER dev:dev
+WORKDIR /var/www/html
+EOF
+}
+
+function write_vscode_files {
+    mkdir -p ./.vscode
+    cat <<EOF > ./.vscode/launch.json
+{
+    //This file was generated by $0
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Listen for Xdebug",
+            "type": "php",
+            "request": "launch",
+            "port": 9003,
+            "pathMappings": {
+                "/var/www/html": "\${workspaceFolder}"
+            },
+        }
+    ]
+}
+EOF
+    cat <<EOF > ./.vscode/settings.json
+{
+    //This file was generated by $0
+    "php.format.codeStyle": "PSR-12",
+    "blade.format.enable": true,
+    "bladeFormatter.format.noMultipleEmptyLines": true,
+    "bladeFormatter.format.sortTailwindcssClasses": true,
+    "bladeFormatter.misc.dontShowNewVersionMessage": true,
+    "bladeFormatter.format.sortHtmlAttributes": "alphabetical",
+    "[blade]": {
+        "editor.defaultFormatter": "shufo.vscode-blade-formatter"
+    },
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+   }
+EOF
+}
+
+function confirm {
+    echo "${YELLOW}All files will be deleted!${NC}"
+    echo -n "Are you sure to continue? [y/n] "
+    read -n 1 YN
+    echo
+    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+        return
+    fi
+    exit
+}
+
+if [ $# -gt 0 ]; then
+    if [ "$1" == "help" ] || [ "$1" == "-h" ] || [ "$1" == "-help" ] || [ "$1" == "--help" ]; then
+        display_help
+    fi
+else
+    display_help
+fi
+
+cmd=$1
+shift 1
+
+if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
+    stop_if_up
+    if [ ! -f ./.docker/framework ]; then
+        # check for webdev installation in parent paths
+        PATH=$(pwd)
+        PROJ=-
+        while [ ! "$(pwd)" == "/" ] && [ "$PROJ" == "-" ]; do
+            cd ..
+            if [ -f ./.docker/framework ]; then
+                PROJ=$(pwd)
+            fi
+        done
+        if [ "$PROJ" == "-" ]; then
+            cd $PATH
+            if [ -n "$(/usr/bin/ls -A $PATH)" ]; then
+                echo "${RED}ATTENTION!${NC}"
+                echo "This folder was not used for web development yet and is not empty."
+                echo -n "Do you want to continue using this folder? [y/n] "
+                read -n 1 YN
+                echo
+                if [ ! "$YN" == "y" ] && [ ! "$YN" == "Y" ]; then
+                    exit
+                fi
+            fi
+        fi
+        echo "${YELLOW}Using this folder: ${NC}$(pwd)"
+    fi
+
+    echo "${YELLOW}Starting webdev containers...${NC}"
+    write_docker_compose
+    write_docker_file_php
+    write_vscode_files
+    write_gitignore_file
+    mkdir -p ./.docker/mysqldata
+    ${COMPOSE} up -d --remove-orphans --build $@
+    echo "${GREEN}Started${NC}"
+    if [ ! -f ./.docker/framework ]; then
+        $0 install
+    fi
+elif [ "$cmd" == "down" ] || [ "$cmd" == "d" ]; then
+    echo "${YELLOW}Stopping webdev containers...${NC}"
+    if [ -f ./docker-compose.yml ]; then
+        ${COMPOSE} down
+        ${COMPOSE} rm -f
+    fi
+    IDS=$(${DOCKER} ps -a -f name=webdev- -q)
+    for ID in $IDS; do
+        ${DOCKER} container stop $ID
+        ${DOCKER} container rm $ID
+    done
+    ${DOCKER} network prune -f
+    echo "${GREEN}Stopped${NC}"
+elif [ "$cmd" == "shell" ] || [ "$cmd" == "s" ]; then
+    start_if_down
+    ${EXEC} bash
+elif [ "$cmd" == "artisan" ] || [ "$cmd" == "a" ]; then
+    if [ ! -f ./artisan ]; then
+        echo "${RED}No framework with artisan installed!${NC}"
+        exit 1
+    fi
+    start_if_down
+    ${EXEC} php artisan "$@"
+elif [ "$cmd" == "npm" ] || [ "$cmd" == "n" ]; then
+    start_if_down
+    ${EXEC} npm "$@"
+elif [ "$cmd" == "composer" ] || [ "$cmd" == "c" ]; then
+    start_if_down
+    ${EXEC} composer "$@"
+elif [ "$cmd" == "execute" ] || [ "$cmd" == "e" ]; then
+    start_if_down
+    ${EXEC} "$@"
+elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
+    start_if_down
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ "$FRAMEWORK" == "laravel" ]; then
+        xdg-open http://localhost:8080 2>/dev/null >/dev/null
+        sleep 5
+    fi
+    if [ "$FRAMEWORK" == "laravel" ] || [ "$FRAMEWORK" == "wordpress" ]; then
+        xdg-open http://localhost:8025 2>/dev/null >/dev/null
+        sleep 5
+    fi
+    xdg-open http://localhost 2>/dev/null >/dev/null
+elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
+    echo "${GREEN}Select the framework you want to use:${NC}"
+    options=("Keep as it is" "Skeleton (just a phpinfo page)" "Laravel" "Laravel + Breeze" "Laravel + Jetstream" "Wordpress" "Reveal.js")
+    select_option "${options[@]}"
+    FW=$?
+    if [ ! "$FW" == "0" ]; then
+        if [ -f ./.docker/framework ]; then
+            confirm
+            stop_if_up
+            rm -rf ./.docker
+        fi
+        shopt -s dotglob
+        rm -rf *
+    fi
+    mkdir -p ./.docker
+    touch ./.docker/framework
+    start_if_down
+    if [ "$FW" == "1" ]; then
+        write_skeleton_index
+        echo skeleton > ./.docker/framework
+    fi
+    if [ "$FW" == "2" ] || [ "$FW" == "3" ] || [ "$FW" == "4" ]; then
+        ${EXEC} composer create-project laravel/laravel lv_temp
+        shopt -s dotglob
+        mv -f lv_temp/* .
+        rm -rf lv_temp
+        ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=mailhog/' .env
+        ${EXEC} sed -i 's/DB_HOST=.*/DB_HOST=mysql/' .env
+        ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
+        ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
+        ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
+        ${EXEC} composer require laravel/pint --dev
+        echo laravel > ./.docker/framework
+    fi
+    if [ "$FW" == "3" ]; then
+        ${EXEC} composer require laravel/breeze
+        ${EXEC} php artisan breeze:install
+        ${EXEC} npm install
+        #${EXEC} mv postcss.config.js postcss.config.mjs
+        $0 laravel-build
+    fi
+    if [ "$FW" == "4" ]; then
+        ${EXEC} composer require laravel/jetstream
+        ${EXEC} php artisan jetstream:install
+        # livewire --dark
+        ${EXEC} npm install
+        #${EXEC} mv postcss.config.js postcss.config.mjs
+        $0 laravel-build
+    fi
+    if [ "$FW" == "5" ]; then
+        ${EXEC} curl https://wordpress.org/latest.tar.gz -o latest.tar.gz
+        ${EXEC} tar -xzf latest.tar.gz
+        ${EXEC} rm latest.tar.gz
+        ${EXEC} mv wordpress public
+        ${EXEC} cp public/wp-config-sample.php public/wp-config.php
+        ${EXEC} sed -i 's/database_name_here/dev/g' public/wp-config.php
+        ${EXEC} sed -i 's/username_here/dev/g' public/wp-config.php
+        ${EXEC} sed -i 's/password_here/dev/g' public/wp-config.php
+        ${EXEC} sed -i 's/localhost/mysql/g' public/wp-config.php
+        for i in {1..10}
+        do
+            RAND=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+            ${EXEC} sed -i '0,/put your unique phrase here/s//'$RAND'/' public/wp-config.php
+        done
+        echo wordpress > ./.docker/framework
+    fi
+    if [ "$FW" == "6" ]; then
+        ${EXEC} git clone https://github.com/hakimel/reveal.js rv_temp
+        shopt -s dotglob
+        mv -f rv_temp/* .
+        rm -rf rv_temp
+        mkdir -p ./public
+        mkdir -p ./assets/images
+        mkdir -p ./assets/sounds
+        mkdir -p ./assets/videos
+        ln -s ../index.html ./public/index.php
+        ln -s ../dist ./public/dist
+        ln -s ../assets ./public/assets
+        ln -s ../plugin ./public/plugin
+        echo reveal.js > ./.docker/framework
+    fi
+elif [ "$cmd" == "php" ] || [ "$cmd" == "p" ]; then
+    if [ ! -f ./.docker/php/version ]; then
+        echo "${RED}Not installed yet${NC}"
+        echo "Please run at least one time"
+        exit 1
+    fi
+    get_php_version
+    echo "Current PHP version: ${YELLOW}${PHP_VERSION}${NC}"
+    echo -n "Do you want to change? [y/n] "
+    read -n 1 YN
+    echo
+    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+        rm ./.docker/php/version
+        $0 up
+    fi
+elif [ "$cmd" == "run" ] || [ "$cmd" == "r" ]; then
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ "$FRAMEWORK" == "laravel" ]; then
+        start_if_down
+        ${EXEC} php artisan migrate
+        if [ -d ./node_modules/vite ]; then
+            ${EXEC} npm run dev -- --host
+        fi
+    else
+        echo "${RED}No runable framework installed!${NC}"
+        exit 1
+    fi
+elif [ "$cmd" == "build" ] || [ "$cmd" == "b" ]; then
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ "$FRAMEWORK" == "laravel" ]; then
+        start_if_down
+        ${EXEC} php artisan migrate
+        if [ -d ./node_modules/vite ]; then
+            ${EXEC} npm run build
+        fi
+    elif [ "$FRAMEWORK" == "reveal.js" ]; then
+        start_if_down
+        ${EXEC} npm install
+        ${EXEC} gulp build
+    else
+        echo "${RED}No buildable framework installed!${NC}"
+        exit 1
+    fi
+elif [ "$cmd" == "export" ] || [ "$cmd" == "x" ]; then
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ "$FRAMEWORK" == "reveal.js" ]; then
+        start_if_down
+        if [ -f ./presentation.zip ]; then
+            rm ./presentation.zip
+        fi
+        ${EXEC} zip -9 -r ./presentation.zip ./index.html ./dist ./assets ./plugin
+    else
+        echo "${RED}No exportable framework installed!${NC}"
+        exit 1
+    fi
+elif [ "$cmd" == "format" ] || [ "$cmd" == "f" ]; then
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ "$FRAMEWORK" == "laravel" ]; then
+        start_if_down
+        ${EXEC} ./vendor/bin/pint --preset psr12 $@
+    else
+        echo "${RED}No laravel framework installed!${NC}"
+        exit 1
+    fi
+else
+    start_if_down
+    ${EXEC} $@
+fi
+
+
