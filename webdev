@@ -119,7 +119,7 @@ function display_help {
 }
 
 function start_if_down {
-    ID=$(${COMPOSE} ps php -q)
+    ID=$(${COMPOSE} ps -q php)
     if [ -z "${ID}" ]; then
         $0 up
     fi
