@@ -5,7 +5,7 @@ export GROUP_ID=$(id -g)
 export CURRENT_UID=${USER_ID}:${GROUP_ID}
 
 DOCKER="docker"
-COMPOSE="${DOCKER} compose"
+COMPOSE="docker-compose"
 EXEC="${COMPOSE} exec php"
 ME="$0"
 
