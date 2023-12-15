@@ -122,6 +122,9 @@ function start_if_down {
     ID=$(${COMPOSE} ps -q php)
     if [ -z "${ID}" ]; then
         $0 up
+        if [ "$?" == "1" ]; then
+            exit 1
+        fi
     fi
 }
 
@@ -391,7 +394,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
                 read -n 1 YN
                 echo
                 if [ ! "$YN" == "y" ] && [ ! "$YN" == "Y" ]; then
-                    exit
+                    exit 1
                 fi
             fi
         fi
@@ -443,6 +446,21 @@ elif [ "$cmd" == "execute" ] || [ "$cmd" == "e" ]; then
     ${EXEC} "$@"
 elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
     start_if_down
+    if [ -z "$(command -v xdg-open)" ]; then
+        echo
+        echo "${YELLOW}WARNING!${NC}"
+        echo "It seems that the URLs will not be opened on this machine."
+        echo "Maybe you are using a virtual machine?"
+        echo "Please open the URLs manually:"
+        echo "   http://localhost           Main page"
+        echo "   http://localhost:8080      PHPMyAdmin"
+        echo "   http://localhost:8025      MailHog"
+        echo
+        echo "If accessing from another machine replace localhost with"
+        echo "the IP address which may be one of these:"
+        ip addr show | grep 'inet ' | awk '{print $2}' | cut -d '/' -f 1
+        exit
+    fi
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
         xdg-open http://localhost:8080 2>/dev/null >/dev/null
