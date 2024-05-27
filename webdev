@@ -6,7 +6,7 @@ export CURRENT_UID=${USER_ID}:${GROUP_ID}
 
 DOCKER="docker"
 COMPOSE="docker-compose"
-EXEC="${COMPOSE} exec php"
+EXEC="${COMPOSE} exec webdev-php"
 ME="$0"
 
 if test -t 1; then
@@ -18,6 +18,7 @@ if test -t 1; then
         RED="$(tput setaf 1)"
         YELLOW="$(tput setaf 3)"
         GREEN="$(tput setaf 2)"
+        BLUE="$(tput setaf 4)"
         NC="$(tput sgr0)"
     fi
 fi
@@ -104,22 +105,28 @@ function display_help {
     echo "  ${RED}o${GREEN}pen${NC}                    Open in browser"
     echo "  ${RED}i${GREEN}nstall${NC}                 Install framework"
     echo "  ${RED}p${GREEN}hp${NC}                     Change PHP version"
+    echo "  ${RED}m${GREEN}ysql${NC}                   Change MySQL type"
+    echo "  ${GREEN}remove${NC}                  Remove webdev stuff from this project"
+    echo "  ${GREEN}cleanup${NC}                 Clean up all docker files globally"
     echo
     echo "${YELLOW}Special Laravel commands${NC}"
     echo "  ${RED}r${GREEN}un${NC}                     Start Laravel in development mode"
     echo "  ${RED}b${GREEN}uild${NC}                   Build Laravel files for production"
     echo "  ${RED}a${GREEN}rtisan${NC} [command]       Run an artisan command"
     echo "  ${RED}f${GREEN}ormat${NC} [file]           Format code with Pint"
+    echo "  ${GREEN}ro${NC}                      ${BLUE}= run + open${NC}"
+    echo "  ${GREEN}bo${NC}                      ${BLUE}= build + open${NC}"
     echo
     echo "${YELLOW}Special reveal.js commands${NC}"
     echo "  ${RED}b${GREEN}uild${NC}                   Build reveal.js (plugins / css)"
     echo "  ${GREEN}e${RED}x${GREEN}port${NC}                  Compress relevant files to ZIP"
+    echo "  ${GREEN}bo${NC}                      ${BLUE}= build + open${NC}"
     echo
     exit
 }
 
 function start_if_down {
-    ID=$(${COMPOSE} ps -q php)
+    ID=$(${COMPOSE} ps -q webdev-php)
     if [ -z "${ID}" ]; then
         $0 up
         if [ "$?" == "1" ]; then
@@ -161,7 +168,7 @@ function get_php_version {
     mkdir -p ./.docker/php
     if [ ! -f ./.docker/php/version ]; then
         echo "${GREEN}Select PHP version you want to use:${NC}"
-        options=("8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1")
+        options=("8.3" "8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1")
         select_option "${options[@]}"
         option=${options[$?]}
         echo $option > ./.docker/php/version
@@ -169,15 +176,55 @@ function get_php_version {
     PHP_VERSION=$(cat ./.docker/php/version)
 }
 
+function get_mysql_version {
+    mkdir -p ./.docker/mysqldata
+    if [ ! -f ./.docker/mysql ]; then
+        echo "${GREEN}Select MySQL type you want to use:${NC}"
+        options=("Persistent" "Temporary" "None")
+        select_option "${options[@]}"
+        option=${options[$?]}
+        echo $option > ./.docker/mysql
+    fi
+    MYSQL_VERSION=$(cat ./.docker/mysql)
+}
+
+function get_webdir {
+    DIR_WEBROOT=public
+    if [ -d ./html ]; then
+        DIR_WEBROOT=html
+    fi
+    if [ -d ./htdocs ]; then
+        DIR_WEBROOT=htdocs
+    fi
+    if [ -d ./webroot ]; then
+        DIR_WEBROOT=webroot
+    fi
+    if [ -d ./wwwroot ]; then
+        DIR_WEBROOT=wwwroot
+    fi
+    if [ -d ./public ]; then
+        DIR_WEBROOT=public
+    fi
+}
+
+function remove_docker_images {
+    IMAGES=$(docker images | grep $1 | sed -r -e 's!\s+!:!g' | cut -d ':' -f 1-2)
+    for i in $IMAGES
+    do
+        $DOCKER rmi $i
+    done
+}
+
 function write_docker_compose {
     get_php_version
+    get_mysql_version
+    get_webdir
     cat <<EOF >./docker-compose.yml
-version: '3.8'
 
 # Services
 services:
   #Apache Service with PHP
-  php:
+  webdev-php:
     container_name: webdev-php
     image: local.php-${PHP_VERSION}
     build: ./.docker/php
@@ -187,6 +234,7 @@ services:
     environment:
       - XDEBUG_MODE=develop,debug
       - XDEBUG_CONFIG=client_host=host.docker.internal client_port=9003 discover_client_host=true client.remote_host=host.docker.internal remote_port=9003 remote_enable=1
+      - APACHE_DOCUMENT_ROOT=/var/www/html/${DIR_WEBROOT}
     ports:
       - 80:80
       - 443:443
@@ -194,27 +242,35 @@ services:
     working_dir: /var/www/html
     volumes:
       - .:/var/www/html
+EOF
+    if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+        cat <<EOF >>./docker-compose.yml
     depends_on:
-      - mysql
+      - webdev-mysql
+EOF
+    fi
+    cat <<EOF >>./docker-compose.yml
     networks:
       - webdev
     extra_hosts:
       - host.docker.internal:host-gateway
 
-  mailhog:
+  webdev-mailhog:
     container_name: webdev-mailhog
-    image: mailhog/mailhog:v1.0.1
+    image: mailhog/mailhog
     restart: "no"
     ports:
       - 8025:8025
     networks:
       - webdev
 
-  mysql:
+EOF
+    if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+        cat <<EOF >>./docker-compose.yml
+  webdev-mysql:
     container_name: webdev-mysql
-    image: mariadb:11.1.2
+    image: mariadb
     restart: "no"
-    user: \${CURRENT_UID:-1000:1000}
     ports:
       - 3306:3306
     environment:
@@ -222,26 +278,37 @@ services:
       - MARIADB_DATABASE=dev
       - MARIADB_USER=dev
       - MARIADB_PASSWORD=dev
+EOF
+        if [ "$MYSQL_VERSION" == "Persistent" ]; then
+            cat <<EOF >>./docker-compose.yml
+    user: \${CURRENT_UID:-1000:1000}
     volumes:
       - ./.docker/mysqldata:/var/lib/mysql
+EOF
+        fi
+        cat <<EOF >>./docker-compose.yml
     networks:
       - webdev
 
-  phpmyadmin:
+  webdev-phpmyadmin:
     container_name: webdev-phpmyadmin
-    image: phpmyadmin/phpmyadmin:latest
+    image: phpmyadmin/phpmyadmin
     restart: "no"
     ports:
       - 8080:80
     environment:
-      PMA_HOST: mysql
+      PMA_HOST: webdev-mysql
       PMA_USER: dev
       PMA_PASSWORD: dev
+      UPLOAD_LIMIT: 256M
     depends_on:
-      - mysql
+      - webdev-mysql
     networks:
       - webdev
 
+EOF
+    fi
+    cat <<EOF >>./docker-compose.yml
 networks:
   webdev:
     driver: bridge
@@ -263,52 +330,34 @@ function write_docker_file_php {
     cat <<EOF > ./.docker/php/Dockerfile
 FROM php:${PHP_VERSION}-apache
 
-WORKDIR /etc/apache2/sites-available/
-RUN sed -i 's/DocumentRoot\(.*\)/DocumentRoot\1\/public/' 000-default.conf
-RUN sed -i 's/DocumentRoot\(.*\)/DocumentRoot\1\/public/' default-ssl.conf
-WORKDIR /usr/local/etc/php/
-RUN echo '[PHP]' > php.ini
-RUN echo 'error_log = /var/www/html/.docker/php/error.log' >> php.ini
 WORKDIR /tmp
 RUN groupadd -g \${USER_ID:-1000} dev
 RUN useradd -g dev -u \${GROUP_ID:-1000} dev
 RUN mkdir /home/dev
 RUN chown dev:dev /home/dev
-RUN apt-get update
-RUN apt-get install -y gnupg
+RUN apt-get update && apt-get install -y gnupg
 RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
 RUN echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
 RUN apt-get update
-RUN apt-get install -y dialog
-RUN apt-get install -y ssl-cert
-RUN apt-get install -y nodejs npm
-RUN apt-get install -y gulp
-RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
-RUN php composer-setup.php
-RUN php -r "unlink('composer-setup.php');"
-RUN mv composer.phar /usr/local/bin/composer
-RUN apt-get install -y libzip-dev zip unzip zlib1g-dev
-RUN docker-php-ext-install zip
-RUN apt-get install -y libpng-dev libgd3 libgd-dev libfreetype6-dev
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg
-RUN docker-php-ext-install gd
-RUN docker-php-ext-install iconv
-RUN apt-get install -y libonig-dev
-RUN docker-php-ext-install mbstring
-RUN docker-php-ext-install mysqli
-RUN docker-php-ext-install pdo_mysql
-RUN pecl install ${XDEBUG}
-RUN docker-php-ext-enable xdebug
-RUN make-ssl-cert generate-default-snakeoil
-RUN chmod 755 /etc/ssl/private
-RUN chmod 644 /etc/ssl/private/*
-RUN a2enmod rewrite
-RUN a2enmod ssl
-RUN a2ensite default-ssl
+RUN apt-get install -y nano dialog ssl-cert nodejs npm gulp libzip-dev zip unzip zlib1g-dev \
+libpng-dev libgd3 libgd-dev libfreetype6-dev libonig-dev
+RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && php composer-setup.php && php -r "unlink('composer-setup.php');" && mv composer.phar /usr/local/bin/composer
+RUN docker-php-ext-install zip && docker-php-ext-configure gd --with-freetype --with-jpeg && docker-php-ext-install gd && \
+docker-php-ext-install iconv && docker-php-ext-install mbstring && docker-php-ext-install mysqli && docker-php-ext-install pdo_mysql && \
+pecl install ${XDEBUG} && docker-php-ext-enable xdebug
+RUN make-ssl-cert generate-default-snakeoil && chmod 755 /etc/ssl/private && chmod 644 /etc/ssl/private/* && \
+a2enmod rewrite && a2enmod ssl && a2ensite default-ssl
 ENV APACHE_RUN_USER=dev
 ENV APACHE_RUN_GROUP=dev
 ENV APACHE_LOG_DIR=/var/www/html/.docker/apache
 RUN echo root:root | chpasswd
+WORKDIR /etc/apache2/sites-available/
+RUN sed -ri -e 's!/var/www/html!\${APACHE_DOCUMENT_ROOT}!g' *.conf
+WORKDIR /usr/local/etc/php/
+RUN echo '[PHP]' > php.ini
+RUN echo 'error_log = /var/www/html/.docker/php/error.log' >> php.ini
+RUN echo 'post_max_size = 1024M' >> php.ini
+RUN echo 'upload_max_filesize = 256M' >> php.ini
 USER dev:dev
 WORKDIR /var/www/html
 EOF
@@ -406,11 +455,66 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     write_docker_file_php
     write_vscode_files
     write_gitignore_file
-    mkdir -p ./.docker/mysqldata
     ${COMPOSE} up -d --remove-orphans --build $@
     echo "${GREEN}Started${NC}"
     if [ ! -f ./.docker/framework ]; then
+        # try to detect existing framework
+        if [ -f ./artisan ]; then
+            echo "${YELLOW}Laravel detected${NC}"
+            echo -n "Do you want to use this Laravel installation? [y/n] "
+            read -n 1 YN
+            echo
+            if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
+                if [ ! -f .env ]; then
+                    cp .env.example .env
+                fi
+                ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=mailhog/' .env
+                ${EXEC} sed -i 's/DB_HOST=.*/DB_HOST=webdev-mysql/' .env
+                ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
+                ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
+                ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
+                ${EXEC} composer require laravel/pint --dev
+                echo laravel > ./.docker/framework
+                exit 0
+            fi
+        elif [ -f ./public/wp-config.php ]; then
+            echo "${YELLOW}Wordpress detected${NC}"
+            echo -n "Do you want to use this Wordpress installation? [y/n] "
+            read -n 1 YN
+            echo
+            if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
+                echo wordpress > ./.docker/framework
+                exit 0
+            fi
+        elif [ -f ./js/reveal.js ]; then
+            echo "${YELLOW}reveal.js detected${NC}"
+            echo -n "Do you want to this reveal.js presentation? [y/n] "
+            read -n 1 YN
+            echo
+            if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
+                echo reveal.js > ./.docker/framework
+                exit 0
+            fi
+        elif [ -f ./public/index.php ]; then
+            echo "${YELLOW}Custom webpage detected${NC}"
+            echo -n "Do you want to keep this webpage? [y/n] "
+            read -n 1 YN
+            echo
+            if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
+                echo custom > ./.docker/framework
+                exit 0
+            fi
+        fi
         $0 install
+    fi
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ "$FRAMEWORK" == "laravel" ]; then
+        get_mysql_version
+        if [ "$MYSQL_VERSION" == "Temporary" ]; then
+            echo "${YELLOW}Creating temporary database...${NC}"
+            sleep 30
+            ${EXEC} php artisan migrate
+        fi
     fi
 elif [ "$cmd" == "down" ] || [ "$cmd" == "d" ]; then
     echo "${YELLOW}Stopping webdev containers...${NC}"
@@ -463,8 +567,11 @@ elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
     fi
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
-        xdg-open http://localhost:8080 2>/dev/null >/dev/null
-        sleep 5
+        get_mysql_version
+        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+            xdg-open http://localhost:8080 2>/dev/null >/dev/null
+            sleep 5
+        fi
     fi
     if [ "$FRAMEWORK" == "laravel" ] || [ "$FRAMEWORK" == "wordpress" ]; then
         xdg-open http://localhost:8025 2>/dev/null >/dev/null
@@ -473,7 +580,7 @@ elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
     xdg-open http://localhost 2>/dev/null >/dev/null
 elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
     echo "${GREEN}Select the framework you want to use:${NC}"
-    options=("Keep as it is" "Skeleton (just a phpinfo page)" "Laravel" "Laravel + Breeze" "Laravel + Jetstream" "Wordpress" "Reveal.js")
+    options=("Keep as it is" "Skeleton (just a phpinfo page)" "Laravel" "Wordpress" "Reveal.js")
     select_option "${options[@]}"
     FW=$?
     if [ ! "$FW" == "0" ]; then
@@ -492,35 +599,34 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         write_skeleton_index
         echo skeleton > ./.docker/framework
     fi
-    if [ "$FW" == "2" ] || [ "$FW" == "3" ] || [ "$FW" == "4" ]; then
-        ${EXEC} composer create-project laravel/laravel lv_temp
+    if [ "$FW" == "2" ]; then
+        get_mysql_version
+        ${EXEC} composer require laravel/installer
+        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+            ${EXEC} vendor/laravel/installer/bin/laravel new --database mysql lv_temp
+        else
+            ${EXEC} vendor/laravel/installer/bin/laravel new --database sqlite lv_temp
+        fi
         shopt -s dotglob
         mv -f lv_temp/* .
         rm -rf lv_temp
         ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=mailhog/' .env
-        ${EXEC} sed -i 's/DB_HOST=.*/DB_HOST=mysql/' .env
-        ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
-        ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
-        ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
+        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+            ${EXEC} sed -i 's/DB_HOST=.*/DB_HOST=webdev-mysql/' .env
+            ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
+            ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
+            ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
+        fi
         ${EXEC} composer require laravel/pint --dev
+        ${EXEC} php artisan migrate
         echo laravel > ./.docker/framework
     fi
     if [ "$FW" == "3" ]; then
-        ${EXEC} composer require laravel/breeze
-        ${EXEC} php artisan breeze:install
-        ${EXEC} npm install
-        #${EXEC} mv postcss.config.js postcss.config.mjs
-        $0 laravel-build
-    fi
-    if [ "$FW" == "4" ]; then
-        ${EXEC} composer require laravel/jetstream
-        ${EXEC} php artisan jetstream:install
-        # livewire --dark
-        ${EXEC} npm install
-        #${EXEC} mv postcss.config.js postcss.config.mjs
-        $0 laravel-build
-    fi
-    if [ "$FW" == "5" ]; then
+        get_mysql_version
+        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+            echo "${RED}Wordpress requires MySQL database${NC}"
+            exit
+        fi
         ${EXEC} curl https://wordpress.org/latest.tar.gz -o latest.tar.gz
         ${EXEC} tar -xzf latest.tar.gz
         ${EXEC} rm latest.tar.gz
@@ -529,7 +635,7 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         ${EXEC} sed -i 's/database_name_here/dev/g' public/wp-config.php
         ${EXEC} sed -i 's/username_here/dev/g' public/wp-config.php
         ${EXEC} sed -i 's/password_here/dev/g' public/wp-config.php
-        ${EXEC} sed -i 's/localhost/mysql/g' public/wp-config.php
+        ${EXEC} sed -i 's/localhost/webdev-mysql/g' public/wp-config.php
         for i in {1..10}
         do
             RAND=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
@@ -537,7 +643,7 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         done
         echo wordpress > ./.docker/framework
     fi
-    if [ "$FW" == "6" ]; then
+    if [ "$FW" == "4" ]; then
         ${EXEC} git clone https://github.com/hakimel/reveal.js rv_temp
         shopt -s dotglob
         mv -f rv_temp/* .
@@ -565,6 +671,21 @@ elif [ "$cmd" == "php" ] || [ "$cmd" == "p" ]; then
     echo
     if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
         rm ./.docker/php/version
+        $0 up
+    fi
+elif [ "$cmd" == "mysql" ] || [ "$cmd" == "m" ]; then
+    if [ ! -f ./.docker/mysql ]; then
+        echo "${RED}Not installed yet${NC}"
+        echo "Please run at least one time"
+        exit 1
+    fi
+    get_mysql_version
+    echo "Current MySQL type: ${YELLOW}${MYSQL_VERSION}${NC}"
+    echo -n "Do you want to change? [y/n] "
+    read -n 1 YN
+    echo
+    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+        rm ./.docker/mysql
         $0 up
     fi
 elif [ "$cmd" == "run" ] || [ "$cmd" == "r" ]; then
@@ -615,6 +736,43 @@ elif [ "$cmd" == "format" ] || [ "$cmd" == "f" ]; then
     else
         echo "${RED}No laravel framework installed!${NC}"
         exit 1
+    fi
+elif [ "$cmd" == "bo" ]; then
+    start_if_down
+    $0 build
+    $0 open
+elif [ "$cmd" == "ro" ]; then
+    start_if_down
+    sleep 10 && $0 open &
+    $0 run
+elif [ "$cmd" == "remove" ]; then
+    echo "${YELLOW}Webdev data (including database) will be removed${NC}"
+    echo "All other project data will not be touched"
+    echo -n "Are you sure? [y/n] "
+    read -n 1 YN
+    echo
+    if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
+        $0 down
+        rm -rf .docker
+        rm -f .vscode/launch.json
+        rm -f .vscode/settings.json
+        rmdir --ignore-fail-on-non-empty .vscode
+        rm -f docker-compose.yml
+    fi
+elif [ "$cmd" == "cleanup" ]; then
+    echo "${YELLOW}All docker containers and images will be removed from system${NC}"
+    echo -n "Are you sure? [y/n] "
+    read -n 1 YN
+    echo
+    if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
+        $0 down
+        remove_docker_images mariadb
+        remove_docker_images phpmyadmin
+        remove_docker_images local.php
+        remove_docker_images mailhog
+        $DOCKER volume prune -f
+        $DOCKER system prune -f
+
     fi
 else
     start_if_down
