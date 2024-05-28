@@ -103,6 +103,7 @@ function display_help {
     echo "  ${RED}c${GREEN}omposer${NC} [command]      Run a composer command"
     echo "  ${RED}n${GREEN}pm${NC} [command]           Run a npm command"
     echo "  ${RED}o${GREEN}pen${NC}                    Open in browser"
+    echo "  ${RED}f${GREEN}ormat${NC} [--test] [file]  Format code with Pint"
     echo "  ${RED}i${GREEN}nstall${NC}                 Install framework"
     echo "  ${RED}p${GREEN}hp${NC}                     Change PHP version"
     echo "  ${RED}m${GREEN}ysql${NC}                   Change MySQL type"
@@ -113,7 +114,6 @@ function display_help {
     echo "  ${RED}r${GREEN}un${NC}                     Start Laravel in development mode"
     echo "  ${RED}b${GREEN}uild${NC}                   Build Laravel files for production"
     echo "  ${RED}a${GREEN}rtisan${NC} [command]       Run an artisan command"
-    echo "  ${RED}f${GREEN}ormat${NC} [file]           Format code with Pint"
     echo "  ${GREEN}ro${NC}                      ${BLUE}= run + open${NC}"
     echo "  ${GREEN}bo${NC}                      ${BLUE}= build + open${NC}"
     echo
@@ -411,6 +411,27 @@ function confirm {
     exit
 }
 
+function get_webdev_dir {
+    START_DIR=$(pwd)
+    while [ ! "$(pwd)" == "/" ]; do
+        if [ -f ./.docker/framework ]; then
+            WEBDEV_DIR=$(pwd)
+            cd $START_DIR
+            return
+        fi
+        cd ..
+    done
+    WEBDEV_DIR=$START_DIR
+    cd $START_DIR
+}
+
+function goto {
+    if [ ! "$(pwd)" == "$1" ]; then
+        cd $1
+        echo "${YELLOW}Web development folder: ${NC}$(pwd)"
+    fi
+}
+
 if [ $# -gt 0 ]; then
     if [ "$1" == "help" ] || [ "$1" == "-h" ] || [ "$1" == "-help" ] || [ "$1" == "--help" ]; then
         display_help
@@ -422,32 +443,23 @@ fi
 cmd=$1
 shift 1
 
+get_webdev_dir
+goto $WEBDEV_DIR
+
 if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     stop_if_up
     if [ ! -f ./.docker/framework ]; then
-        # check for webdev installation in parent paths
         CURPATH=$(pwd)
-        PROJ=-
-        while [ ! "$(pwd)" == "/" ] && [ "$PROJ" == "-" ]; do
-            cd ..
-            if [ -f ./.docker/framework ]; then
-                PROJ=$(pwd)
-            fi
-        done
-        if [ "$PROJ" == "-" ]; then
-            cd $CURPATH
-            if [ -n "$(ls -A $CURPATH)" ]; then
-                echo "${RED}ATTENTION!${NC}"
-                echo "This folder was not used for web development yet and is not empty."
-                echo -n "Do you want to continue using this folder? [y/n] "
-                read -n 1 YN
-                echo
-                if [ ! "$YN" == "y" ] && [ ! "$YN" == "Y" ]; then
-                    exit 1
-                fi
+        if [ -n "$(ls -A $CURPATH)" ]; then
+            echo "${RED}ATTENTION!${NC}"
+            echo "This folder was not used for web development yet and is not empty."
+            echo -n "Do you want to continue using this folder? [y/n] "
+            read -n 1 YN
+            echo
+            if [ ! "$YN" == "y" ] && [ ! "$YN" == "Y" ]; then
+                exit 1
             fi
         fi
-        echo "${YELLOW}Using this folder: ${NC}$(pwd)"
     fi
 
     echo "${YELLOW}Starting webdev containers...${NC}"
@@ -473,7 +485,6 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
                 ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
                 ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
                 ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
-                ${EXEC} composer require laravel/pint --dev
                 echo laravel > ./.docker/framework
                 exit 0
             fi
@@ -617,7 +628,6 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
             ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
             ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
         fi
-        ${EXEC} composer require laravel/pint --dev
         ${EXEC} php artisan migrate
         echo laravel > ./.docker/framework
     fi
@@ -729,14 +739,37 @@ elif [ "$cmd" == "export" ] || [ "$cmd" == "x" ]; then
         exit 1
     fi
 elif [ "$cmd" == "format" ] || [ "$cmd" == "f" ]; then
-    FRAMEWORK=$(cat ./.docker/framework)
-    if [ "$FRAMEWORK" == "laravel" ]; then
-        start_if_down
-        ${EXEC} ./vendor/bin/pint --preset psr12 $@
-    else
-        echo "${RED}No laravel framework installed!${NC}"
+    if [ ! -f ./vendor/bin/pint ]; then
+        echo "${YELLOW}Pint not found${NC}"
+        echo -n "Do you want to install Pint? [y/n] "
+        read -n 1 YN
+        echo
+        if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+            start_if_down
+            ${EXEC} composer require laravel/pint --dev
+        fi
+    fi
+    if [ ! -f ./vendor/bin/pint ]; then
+        echo "${RED}Pint not found${NC}"
         exit 1
     fi
+    start_if_down
+    RELPATH=$(realpath --relative-to=$WEBDEV_DIR $START_DIR)/
+    c_pre=
+    c_post=
+    while [ ! "$1" ==  "" ]; do
+        if [ "${1:0:1}" == "-" ]; then
+            c_pre=$(echo "$c_pre $1")
+        else
+            c_post=$(echo "$c_post ${RELPATH}$1")
+        fi
+        shift 1
+    done
+
+    if [ "$c_post" == "" ]; then
+        c_post=$RELPATH
+    fi
+    ${EXEC} ./vendor/bin/pint --preset psr12 $c_pre $c_post
 elif [ "$cmd" == "bo" ]; then
     start_if_down
     $0 build
