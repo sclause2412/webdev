@@ -168,12 +168,13 @@ function get_php_version {
     mkdir -p ./.docker/php
     if [ ! -f ./.docker/php/version ]; then
         echo "${GREEN}Select PHP version you want to use:${NC}"
-        options=("8.3" "8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1")
+        options=("8.3" "8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1" "5.6")
         select_option "${options[@]}"
         option=${options[$?]}
         echo $option > ./.docker/php/version
     fi
     PHP_VERSION=$(cat ./.docker/php/version)
+    PHP_MAIN_VERSION=$(echo "${PHP_VERSION:0:1}")
 }
 
 function get_mysql_version {
@@ -319,11 +320,11 @@ function write_docker_file_php {
     get_php_version
     mkdir -p ./.docker/php
 
-    if [ "${PHP_VERSION:0:1}" == "8" ]; then
+    if [ "${PHP_MAIN_VERSION}" == "8" ]; then
         XDEBUG=xdebug
     fi
 
-    if [ "${PHP_VERSION:0:1}" == "7" ]; then
+    if [ "${PHP_MAIN_VERSION}" == "7" ]; then
         XDEBUG=xdebug-2.9.2
     fi
 
@@ -335,16 +336,58 @@ RUN groupadd -g \${USER_ID:-1000} dev
 RUN useradd -g dev -u \${GROUP_ID:-1000} dev
 RUN mkdir /home/dev
 RUN chown dev:dev /home/dev
+EOF
+
+    if [ "${PHP_MAIN_VERSION}" == "5" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN sed -i '/stretch-updates/d' /etc/apt/sources.list && sed -i 's/deb.debian.org/archive.debian.org/' /etc/apt/sources.list && sed -i 's/security.debian.org/archive.debian.org/' /etc/apt/sources.list
+EOF
+    fi
+
+    if [ "${PHP_MAIN_VERSION}" == "7" ] || [ "${PHP_MAIN_VERSION}" == "8" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
 RUN apt-get update && apt-get install -y gnupg
 RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
 RUN echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
+EOF
+    fi
+
+    cat <<EOF >> ./.docker/php/Dockerfile
 RUN apt-get update
-RUN apt-get install -y nano dialog ssl-cert nodejs npm gulp libzip-dev zip unzip zlib1g-dev \
-libpng-dev libgd3 libgd-dev libfreetype6-dev libonig-dev
+RUN apt-get install -y nano dialog ssl-cert libzip-dev zip unzip zlib1g-dev libpng-dev libgd3 libgd-dev libfreetype6-dev
+EOF
+
+    if [ "${PHP_MAIN_VERSION}" == "7" ] || [ "${PHP_MAIN_VERSION}" == "8" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN apt-get install -y nodejs npm gulp libonig-dev
+EOF
+    fi
+
+    if [ "${PHP_MAIN_VERSION}" == "5" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN apt-get install -y git
+EOF
+    fi
+
+    cat <<EOF >> ./.docker/php/Dockerfile
 RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && php composer-setup.php && php -r "unlink('composer-setup.php');" && mv composer.phar /usr/local/bin/composer
 RUN docker-php-ext-install zip && docker-php-ext-configure gd --with-freetype --with-jpeg && docker-php-ext-install gd && \
-docker-php-ext-install iconv && docker-php-ext-install mbstring && docker-php-ext-install mysqli && docker-php-ext-install pdo_mysql && \
-pecl install ${XDEBUG} && docker-php-ext-enable xdebug
+docker-php-ext-install iconv && docker-php-ext-install mbstring && docker-php-ext-install mysqli && docker-php-ext-install pdo_mysql
+EOF
+
+    if [ "${PHP_MAIN_VERSION}" == "5" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN docker-php-ext-install mysql
+EOF
+    fi
+
+    if [ "${PHP_MAIN_VERSION}" == "7" ] || [ "${PHP_MAIN_VERSION}" == "8" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN pecl install ${XDEBUG} && docker-php-ext-enable xdebug
+EOF
+    fi
+
+    cat <<EOF >> ./.docker/php/Dockerfile
 RUN make-ssl-cert generate-default-snakeoil && chmod 755 /etc/ssl/private && chmod 644 /etc/ssl/private/* && \
 a2enmod rewrite && a2enmod ssl && a2ensite default-ssl
 ENV APACHE_RUN_USER=dev
@@ -359,6 +402,9 @@ RUN echo 'error_log = /var/www/html/.docker/php/error.log' >> php.ini
 RUN echo 'post_max_size = 1024M' >> php.ini
 RUN echo 'upload_max_filesize = 256M' >> php.ini
 USER dev:dev
+WORKDIR /home/dev
+RUN echo PATH=\\\$PATH:\$(composer config --global home)/\$(composer config --global bin-dir) > .bashrc
+RUN echo export PATH >> .bashrc
 WORKDIR /var/www/html
 EOF
 }
@@ -551,6 +597,11 @@ elif [ "$cmd" == "artisan" ] || [ "$cmd" == "a" ]; then
     start_if_down
     ${EXEC} php artisan "$@"
 elif [ "$cmd" == "npm" ] || [ "$cmd" == "n" ]; then
+    get_php_version
+    if [ "${PHP_MAIN_VERSION}" == "5" ]; then
+        echo "${RED}No node.js on PHP 5 installation!${NC}"
+        exit 1
+    fi
     start_if_down
     ${EXEC} npm "$@"
 elif [ "$cmd" == "composer" ] || [ "$cmd" == "c" ]; then
@@ -612,11 +663,12 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
     fi
     if [ "$FW" == "2" ]; then
         get_mysql_version
-        ${EXEC} composer require laravel/installer
+        get_php_version
+        ${EXEC} composer global require laravel/installer
         if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
-            ${EXEC} vendor/laravel/installer/bin/laravel new --database mysql lv_temp
+            ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database mysql lv_temp
         else
-            ${EXEC} vendor/laravel/installer/bin/laravel new --database sqlite lv_temp
+            ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database sqlite lv_temp
         fi
         shopt -s dotglob
         mv -f lv_temp/* .
@@ -633,7 +685,7 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
     fi
     if [ "$FW" == "3" ]; then
         get_mysql_version
-        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+        if [ "$MYSQL_VERSION" == "None" ]; then
             echo "${RED}Wordpress requires MySQL database${NC}"
             exit
         fi
