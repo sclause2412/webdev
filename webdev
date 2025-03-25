@@ -103,7 +103,7 @@ function display_help {
     echo "  ${RED}c${GREEN}omposer${NC} [command]      Run a composer command"
     echo "  ${RED}n${GREEN}pm${NC} [command]           Run a npm command"
     echo "  ${RED}o${GREEN}pen${NC}                    Open in browser"
-    echo "  ${RED}f${GREEN}ormat${NC} [--test] [file]  Format code with Pint"
+    echo "  ${RED}f${GREEN}ormat${NC} [--test] [file]  Format code with PHP CS Fixer"
     echo "  ${RED}i${GREEN}nstall${NC}                 Install framework"
     echo "  ${RED}p${GREEN}hp${NC}                     Change PHP version"
     echo "  ${RED}m${GREEN}ysql${NC}                   Change MySQL type"
@@ -190,7 +190,15 @@ function get_mysql_version {
 }
 
 function get_webdir {
-    DIR_WEBROOT=public
+    FRAMEWORK=
+    if [ -f ./.docker/framework ]; then
+        FRAMEWORK=$(cat ./.docker/framework)
+    fi
+    if [ "${FRAMEWORK}" == "custom" ]; then
+        DIR_WEBROOT=
+    else
+        DIR_WEBROOT=public
+    fi
     if [ -d ./html ]; then
         DIR_WEBROOT=html
     fi
@@ -216,10 +224,41 @@ function remove_docker_images {
     done
 }
 
+function laravel_set_database {
+    FRAMEWORK=$(cat ./.docker/framework)
+    if [ ! "$FRAMEWORK" == "laravel" ]; then
+        return
+    fi
+    get_mysql_version
+    if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+        ${EXEC} sed -i 's/[# ]*DB_CONNECTION=.*/DB_CONNECTION=mysql/' .env
+        ${EXEC} sed -i 's/[# ]*DB_HOST=.*/DB_HOST=webdev-mysql/' .env
+        ${EXEC} sed -i 's/[# ]*DB_PORT=.*/DB_PORT=3306/' .env
+        ${EXEC} sed -i 's/[# ]*DB_DATABASE=.*/DB_DATABASE=dev/' .env
+        ${EXEC} sed -i 's/[# ]*DB_USERNAME=.*/DB_USERNAME=dev/' .env
+        ${EXEC} sed -i 's/[# ]*DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
+    else
+        ${EXEC} sed -i 's/[# ]*DB_CONNECTION=.*/DB_CONNECTION=sqlite/' .env
+        ${EXEC} sed -i 's/[# ]*DB_HOST=/# DB_HOST=/' .env
+        ${EXEC} sed -i 's/[# ]*DB_PORT=/# DB_PORT=/' .env
+        ${EXEC} sed -i 's/[# ]*DB_DATABASE=/# DB_DATABASE=/' .env
+        ${EXEC} sed -i 's/[# ]*DB_USERNAME=/# DB_USERNAME=/' .env
+        ${EXEC} sed -i 's/[# ]*DB_PASSWORD=/# DB_PASSWORD=/' .env
+        if [ ! -f ./database/database.sqlite ]; then
+            ${EXEC} php artisan migrate
+        fi
+    fi
+}
+
 function write_docker_compose {
     get_php_version
     get_mysql_version
     get_webdir
+    if [ "${DIR_WEBROOT}" == "" ]; then
+        if [ ! -f ./.htaccess ]; then
+            echo "Options Indexes" > ./.htaccess
+        fi
+    fi
     cat <<EOF >./docker-compose.yml
 
 # Services
@@ -236,8 +275,11 @@ services:
       - XDEBUG_MODE=develop,debug
       - XDEBUG_CONFIG=client_host=host.docker.internal client_port=9003 discover_client_host=true client.remote_host=host.docker.internal remote_port=9003 remote_enable=1
       - APACHE_DOCUMENT_ROOT=/var/www/html/${DIR_WEBROOT}
+      - PHP_CS_FIXER_ALLOW_XDEBUG=true
     ports:
       - 80:80
+      - 8080:8080
+      - 81:81
       - 443:443
       - 5173:5173
     working_dir: /var/www/html
@@ -291,22 +333,6 @@ EOF
     networks:
       - webdev
 
-  webdev-phpmyadmin:
-    container_name: webdev-phpmyadmin
-    image: phpmyadmin/phpmyadmin
-    restart: "no"
-    ports:
-      - 8080:80
-    environment:
-      PMA_HOST: webdev-mysql
-      PMA_USER: dev
-      PMA_PASSWORD: dev
-      UPLOAD_LIMIT: 256M
-    depends_on:
-      - webdev-mysql
-    networks:
-      - webdev
-
 EOF
     fi
     cat <<EOF >>./docker-compose.yml
@@ -332,10 +358,10 @@ function write_docker_file_php {
 FROM php:${PHP_VERSION}-apache
 
 WORKDIR /tmp
-RUN groupadd -g \${USER_ID:-1000} dev
-RUN useradd -g dev -u \${GROUP_ID:-1000} dev
-RUN mkdir /home/dev
-RUN chown dev:dev /home/dev
+RUN groupadd -g \${USER_ID:-1000} dev && \
+useradd -g dev -u \${GROUP_ID:-1000} dev && \
+mkdir /home/dev && \
+chown dev:dev /home/dev
 EOF
 
     if [ "${PHP_MAIN_VERSION}" == "5" ]; then
@@ -346,17 +372,25 @@ EOF
 
     if [ "${PHP_MAIN_VERSION}" == "7" ] || [ "${PHP_MAIN_VERSION}" == "8" ]; then
     cat <<EOF >> ./.docker/php/Dockerfile
-RUN apt-get update && apt-get install -y gnupg
-RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
-RUN echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
+RUN apt-get update && apt-get install -y gnupg && \
+curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - && \
+echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
 EOF
     fi
 
     cat <<EOF >> ./.docker/php/Dockerfile
-RUN apt-get update
-RUN apt-get install -y nano dialog ssl-cert libzip-dev zip unzip zlib1g-dev libpng-dev libgd3 libgd-dev libfreetype6-dev
+RUN apt-get update && \
+apt-get install -y nano dialog ssl-cert libzip-dev zip unzip zlib1g-dev libpng-dev libgd3 libgd-dev libfreetype6-dev golang git
 EOF
-
+    if [ "${PHP_MAIN_VERSION}" == "8" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN GOPATH=/usr go install github.com/mailhog/mhsendmail@latest
+EOF
+    else
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN GOPATH=/usr go get github.com/mailhog/mhsendmail
+EOF
+    fi
     if [ "${PHP_MAIN_VERSION}" == "7" ] || [ "${PHP_MAIN_VERSION}" == "8" ]; then
     cat <<EOF >> ./.docker/php/Dockerfile
 RUN apt-get install -y nodejs npm gulp libonig-dev
@@ -370,9 +404,26 @@ EOF
     fi
 
     cat <<EOF >> ./.docker/php/Dockerfile
-RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && php composer-setup.php && php -r "unlink('composer-setup.php');" && mv composer.phar /usr/local/bin/composer
-RUN docker-php-ext-install zip && docker-php-ext-configure gd --with-freetype --with-jpeg && docker-php-ext-install gd && \
-docker-php-ext-install iconv && docker-php-ext-install mbstring && docker-php-ext-install mysqli && docker-php-ext-install pdo_mysql
+RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
+php composer-setup.php && \
+php -r "unlink('composer-setup.php');" && \
+mv composer.phar /usr/local/bin/composer
+RUN docker-php-ext-install zip
+EOF
+    if [ "${PHP_MAIN_VERSION}" == "8" ]; then
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg && docker-php-ext-install gd
+EOF
+else
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN docker-php-ext-configure gd --with-freetype-dir --with-jpeg-dir && docker-php-ext-install gd
+EOF
+    fi
+    cat <<EOF >> ./.docker/php/Dockerfile
+RUN docker-php-ext-install iconv
+RUN docker-php-ext-install mbstring
+RUN docker-php-ext-install mysqli && docker-php-ext-install pdo_mysql
+RUN docker-php-ext-install pcntl && docker-php-ext-configure pcntl --enable-pcntl
 EOF
 
     if [ "${PHP_MAIN_VERSION}" == "5" ]; then
@@ -383,13 +434,21 @@ EOF
 
     if [ "${PHP_MAIN_VERSION}" == "7" ] || [ "${PHP_MAIN_VERSION}" == "8" ]; then
     cat <<EOF >> ./.docker/php/Dockerfile
-RUN pecl install ${XDEBUG} && docker-php-ext-enable xdebug
+RUN pecl install ${XDEBUG} && \
+docker-php-ext-enable xdebug
 EOF
     fi
 
     cat <<EOF >> ./.docker/php/Dockerfile
-RUN make-ssl-cert generate-default-snakeoil && chmod 755 /etc/ssl/private && chmod 644 /etc/ssl/private/* && \
-a2enmod rewrite && a2enmod ssl && a2ensite default-ssl
+RUN make-ssl-cert generate-default-snakeoil && \
+chmod 755 /etc/ssl/private && \
+chmod 644 /etc/ssl/private/* && \
+a2enmod rewrite && \
+a2enmod ssl && \
+a2ensite default-ssl && \
+echo Listen 81 >> /etc/apache2/ports.conf && \
+echo "<VirtualHost *:81>\nDocumentRoot /var/www/adminer/\n</VirtualHost>" > /etc/apache2/sites-available/001-adminer.conf && \
+a2ensite 001-adminer
 ENV APACHE_RUN_USER=dev
 ENV APACHE_RUN_GROUP=dev
 ENV APACHE_LOG_DIR=/var/www/html/.docker/apache
@@ -397,14 +456,19 @@ RUN echo root:root | chpasswd
 WORKDIR /etc/apache2/sites-available/
 RUN sed -ri -e 's!/var/www/html!\${APACHE_DOCUMENT_ROOT}!g' *.conf
 WORKDIR /usr/local/etc/php/
-RUN echo '[PHP]' > php.ini
-RUN echo 'error_log = /var/www/html/.docker/php/error.log' >> php.ini
-RUN echo 'post_max_size = 1024M' >> php.ini
-RUN echo 'upload_max_filesize = 256M' >> php.ini
+RUN echo '[PHP]' > php.ini && \
+echo 'error_log = /var/www/html/.docker/php/error.log' >> php.ini && \
+echo 'post_max_size = 1024M' >> php.ini && \
+echo 'upload_max_filesize = 256M' >> php.ini && \
+echo 'sendmail_path = "/usr/bin/mhsendmail --smtp-addr=webdev-mailhog:1025"' >> php.ini
 USER dev:dev
+WORKDIR /var/www/adminer
+RUN curl https://github.com/vrana/adminer/releases/download/v5.0.6/adminer-5.0.6.php -L -o adminer.php && \
+curl https://raw.github.com/vrana/adminer/v5.0.6/plugins/plugin.php -L -o plugin.php && \
+echo "<?php\nuse function Adminer\\get_nonce;\nclass WebdevNoDatabase{function loginForm(){echo '<h1>This environment has no database!</h1>';return true;}}class WebdevMySQL{function loginForm(){echo '<input type=\\"hidden\\" name=\\"auth[driver]\\" value=\\"server\\"><input type=\\"hidden\\" name=\\"auth[server]\\" value=\\"webdev-mysql\\"><input type=\\"hidden\\" name=\\"auth[username]\\" value=\\"dev\\"><input type=\\"hidden\\" name=\\"auth[password]\\" value=\\"dev\\"><input type=\\"hidden\\" name=\\"auth[db]\\" value=\\"dev\\"><input style=\\"display: none;\\" type=\\"submit\\" id=\\"webdev-autologin\\"><script nonce=\\"'.get_nonce().'\\">window.setTimeout(function(){document.getElementById(\\"webdev-autologin\\").click();},1000);</script>';return true;}}class WebdevSQLite{function loginForm(){echo '<input type=\\"hidden\\" name=\\"auth[driver]\\" value=\\"sqlite\\"><input type=\\"hidden\\" name=\\"auth[db]\\" value=\\"../html/database/database.sqlite\\"><input style=\\"display: none;\\" type=\\"submit\\" id=\\"webdev-autologin\\"><script nonce=\\"'.get_nonce().'\\">window.setTimeout(function(){document.getElementById(\\"webdev-autologin\\").click();},1000);</script>';return true;}function login(\\\$login,\\\$password){return true;}}function adminer_object(){include_once './plugin.php';if(file_exists('../html/.docker/mysql')&&trim(file_get_contents('../html/.docker/mysql'))!='None')return new AdminerPlugin([new WebdevMySQL]);if(file_exists('../html/database/database.sqlite'))return new AdminerPlugin([new WebdevSQLite]);return new AdminerPlugin([new WebdevNoDatabase]);}include_once './adminer.php';" > index.php
 WORKDIR /home/dev
-RUN echo PATH=\\\$PATH:\$(composer config --global home)/\$(composer config --global bin-dir) > .bashrc
-RUN echo export PATH >> .bashrc
+RUN echo PATH=\\\$PATH:\$(composer config --global home)/\$(composer config --global bin-dir) > .bashrc && \
+echo export PATH >> .bashrc
 WORKDIR /var/www/html
 EOF
 }
@@ -413,7 +477,7 @@ function write_vscode_files {
     mkdir -p ./.vscode
     cat <<EOF > ./.vscode/launch.json
 {
-    //This file was generated by $0
+    "_comment": "This file was generated by $0",
     "version": "0.2.0",
     "configurations": [
         {
@@ -428,10 +492,11 @@ function write_vscode_files {
     ]
 }
 EOF
+
     cat <<EOF > ./.vscode/settings.json
 {
-    //This file was generated by $0
-    "php.format.codeStyle": "PSR-12",
+    "_comment": "This file was generated by $0",
+    "php.format.codeStyle": "Off",
     "blade.format.enable": true,
     "bladeFormatter.format.noMultipleEmptyLines": true,
     "bladeFormatter.format.sortTailwindcssClasses": true,
@@ -445,6 +510,91 @@ EOF
    }
 EOF
 }
+
+function write_phpcsfixer_file {
+    cat <<EOF > ./.docker/php-cs-fixer.dist.php
+<?php
+
+use PhpCsFixer\AbstractFixer;
+use PhpCsFixer\FixerDefinition\CodeSample;
+use PhpCsFixer\FixerDefinition\FixerDefinition;
+use PhpCsFixer\Tokenizer\Tokens;
+use PhpCsFixer\Tokenizer\Token;
+use PhpCsFixer\FixerDefinition\FixerDefinitionInterface;
+
+use PhpCsFixer\Config;
+use PhpCsFixer\Runner\Parallel\ParallelConfigFactory;
+
+class SuperIndentationFixer extends AbstractFixer
+{
+    public function isCandidate(Tokens \$tokens): bool
+    {
+        foreach(\$tokens as \$token) {
+            if(\$token->isGivenKind(T_CONSTANT_ENCAPSED_STRING)) {
+                if(strpos(\$token->getContent(),"\t")!==false)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    public function applyFix(SplFileInfo \$file, Tokens \$tokens): void
+    {
+        foreach(\$tokens as \$pos=>\$token) {
+            if(\$token->isGivenKind(T_CONSTANT_ENCAPSED_STRING)) {
+                \$content = \$token->getContent();
+                if(strpos(\$content,"\t")!==false){
+                    \$lines = explode("\n",\$content);
+                    foreach(\$lines as \$row=>\$line)
+                    {
+                        \$lines[\$row] = preg_replace_callback('/^\s+/',function(\$e){
+                            return str_replace("\t","    ",\$e[0]);
+                        },\$line);
+                    }
+                    \$content = implode("\n",\$lines);
+                    \$tokens[\$pos] = new Token([T_CONSTANT_ENCAPSED_STRING,\$content]);
+                }
+            }
+        }
+    }
+
+    public function getDefinition(): FixerDefinitionInterface
+    {
+        return new FixerDefinition('Fixes Tabs on line beginnings in strings',[new CodeSample('no sample')]);
+    }
+
+    public function getPriority(): int
+    {
+        return -999;
+    }
+
+    public function getName(): string
+    {
+        return 'SuperIndentationFixer/tabtospace';
+    }
+}
+
+return (new Config())
+    ->setParallelConfig(ParallelConfigFactory::detect())
+    ->registerCustomFixers([
+        new SuperIndentationFixer(),
+    ])
+    ->setRules([
+        '@PSR12' => true,
+        '@PhpCsFixer' => true,
+        'yoda_style' => ['equal'=>false,'identical'=>false,'less_and_greater'=>false],
+        'increment_style' => false,
+        'blank_line_before_statement' => false,
+        'indentation_type' => true,
+        'line_ending' => true,
+        'SuperIndentationFixer/tabtospace' => true,
+    ])
+    ->setIndent("    ")
+    ->setLineEnding("\n");
+EOF
+
+}
+
 
 function confirm {
     echo "${YELLOW}All files will be deleted!${NC}"
@@ -462,13 +612,13 @@ function get_webdev_dir {
     while [ ! "$(pwd)" == "/" ]; do
         if [ -f ./.docker/framework ]; then
             WEBDEV_DIR=$(pwd)
-            cd $START_DIR
+            cd "$START_DIR"
             return
         fi
         cd ..
     done
     WEBDEV_DIR=$START_DIR
-    cd $START_DIR
+    cd "$START_DIR"
 }
 
 function goto {
@@ -490,7 +640,7 @@ cmd=$1
 shift 1
 
 get_webdev_dir
-goto $WEBDEV_DIR
+goto "$WEBDEV_DIR"
 
 if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     stop_if_up
@@ -513,6 +663,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     write_docker_file_php
     write_vscode_files
     write_gitignore_file
+    export COMPOSE_BAKE=true
     ${COMPOSE} up -d --remove-orphans --build $@
     echo "${GREEN}Started${NC}"
     if [ ! -f ./.docker/framework ]; then
@@ -527,10 +678,6 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
                     cp .env.example .env
                 fi
                 ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=mailhog/' .env
-                ${EXEC} sed -i 's/DB_HOST=.*/DB_HOST=webdev-mysql/' .env
-                ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
-                ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
-                ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
                 echo laravel > ./.docker/framework
                 exit 0
             fi
@@ -566,7 +713,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     fi
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
-        get_mysql_version
+        laravel_set_database
         if [ "$MYSQL_VERSION" == "Temporary" ]; then
             echo "${YELLOW}Creating temporary database...${NC}"
             sleep 30
@@ -595,7 +742,7 @@ elif [ "$cmd" == "artisan" ] || [ "$cmd" == "a" ]; then
         exit 1
     fi
     start_if_down
-    ${EXEC} php artisan "$@"
+    ${EXEC} php -dxdebug.mode=debug -dxdebug.start_with_request=yes -dxdebug.client_host=host.docker.internal -dxdebug.client_port=9003 artisan "$@"
 elif [ "$cmd" == "npm" ] || [ "$cmd" == "n" ]; then
     get_php_version
     if [ "${PHP_MAIN_VERSION}" == "5" ]; then
@@ -619,7 +766,7 @@ elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
         echo "Maybe you are using a virtual machine?"
         echo "Please open the URLs manually:"
         echo "   http://localhost           Main page"
-        echo "   http://localhost:8080      PHPMyAdmin"
+        echo "   http://localhost:81        AdminerEvo"
         echo "   http://localhost:8025      MailHog"
         echo
         echo "If accessing from another machine replace localhost with"
@@ -629,11 +776,8 @@ elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
     fi
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
-        get_mysql_version
-        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
-            xdg-open http://localhost:8080 2>/dev/null >/dev/null
-            sleep 5
-        fi
+        xdg-open http://localhost:81 2>/dev/null >/dev/null
+        sleep 5
     fi
     if [ "$FRAMEWORK" == "laravel" ] || [ "$FRAMEWORK" == "wordpress" ]; then
         xdg-open http://localhost:8025 2>/dev/null >/dev/null
@@ -651,8 +795,7 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
             stop_if_up
             rm -rf ./.docker
         fi
-        shopt -s dotglob
-        rm -rf *
+        find -maxdepth 1 ! -name . ! -name .git -exec rm -rf {} +
     fi
     mkdir -p ./.docker
     touch ./.docker/framework
@@ -670,16 +813,11 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         else
             ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database sqlite lv_temp
         fi
-        shopt -s dotglob
-        mv -f lv_temp/* .
+        cd lv_temp
+        find -maxdepth 1 ! -name . ! -name .git -exec mv -f {} ../ \;
+        cd ..
         rm -rf lv_temp
         ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=mailhog/' .env
-        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
-            ${EXEC} sed -i 's/DB_HOST=.*/DB_HOST=webdev-mysql/' .env
-            ${EXEC} sed -i 's/DB_DATABASE=.*/DB_DATABASE=dev/' .env
-            ${EXEC} sed -i 's/DB_USERNAME=.*/DB_USERNAME=dev/' .env
-            ${EXEC} sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
-        fi
         ${EXEC} php artisan migrate
         echo laravel > ./.docker/framework
     fi
@@ -689,7 +827,7 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
             echo "${RED}Wordpress requires MySQL database${NC}"
             exit
         fi
-        ${EXEC} curl https://wordpress.org/latest.tar.gz -o latest.tar.gz
+        ${EXEC} curl https://wordpress.org/latest.tar.gz -L -o latest.tar.gz
         ${EXEC} tar -xzf latest.tar.gz
         ${EXEC} rm latest.tar.gz
         ${EXEC} mv wordpress public
@@ -707,8 +845,9 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
     fi
     if [ "$FW" == "4" ]; then
         ${EXEC} git clone https://github.com/hakimel/reveal.js rv_temp
-        shopt -s dotglob
-        mv -f rv_temp/* .
+        cd rv_temp
+        find -maxdepth 1 ! -name . ! -name .git -exec mv -f {} ../ \;
+        cd ..
         rm -rf rv_temp
         mkdir -p ./public
         mkdir -p ./assets/images
@@ -720,6 +859,8 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         ln -s ../plugin ./public/plugin
         echo reveal.js > ./.docker/framework
     fi
+    stop_if_up
+    start_if_down
 elif [ "$cmd" == "php" ] || [ "$cmd" == "p" ]; then
     if [ ! -f ./.docker/php/version ]; then
         echo "${RED}Not installed yet${NC}"
@@ -791,37 +932,51 @@ elif [ "$cmd" == "export" ] || [ "$cmd" == "x" ]; then
         exit 1
     fi
 elif [ "$cmd" == "format" ] || [ "$cmd" == "f" ]; then
-    if [ ! -f ./vendor/bin/pint ]; then
-        echo "${YELLOW}Pint not found${NC}"
-        echo -n "Do you want to install Pint? [y/n] "
+    if [ ! -f ./vendor/bin/php-cs-fixer ]; then
+        echo "${YELLOW}PHP CS Fixer not found${NC}"
+        echo -n "Do you want to install PHP CS Fixer? [y/n] "
         read -n 1 YN
         echo
         if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
             start_if_down
-            ${EXEC} composer require laravel/pint --dev
+            ${EXEC} composer require friendsofphp/php-cs-fixer --dev
         fi
     fi
-    if [ ! -f ./vendor/bin/pint ]; then
-        echo "${RED}Pint not found${NC}"
+    if [ ! -f ./vendor/bin/php-cs-fixer ]; then
+        echo "${RED}PHP CS Fixer not found${NC}"
         exit 1
     fi
+    write_phpcsfixer_file
     start_if_down
-    RELPATH=$(realpath --relative-to=$WEBDEV_DIR $START_DIR)/
-    c_pre=
-    c_post=
+    RELPATH=$(realpath --relative-to="$WEBDEV_DIR" "$START_DIR")/
+    c_cmd=fix
+    c_opts=
+    c_files=
+    userules=0
     while [ ! "$1" ==  "" ]; do
-        if [ "${1:0:1}" == "-" ]; then
-            c_pre=$(echo "$c_pre $1")
+        if [ "${1:0:7}" == "--rules" ]; then
+            userules=1
+        fi
+        if [ "$1" == "--test" ]; then
+            c_cmd=check
         else
-            c_post=$(echo "$c_post ${RELPATH}$1")
+            if [ "${1:0:1}" == "-" ]; then
+                c_opts=$(echo "$c_opts $1")
+            else
+                c_files=$(echo "$c_files ${RELPATH}$1")
+            fi
         fi
         shift 1
     done
 
-    if [ "$c_post" == "" ]; then
-        c_post=$RELPATH
+    if [ "$c_files" == "" ]; then
+        c_files=$RELPATH
     fi
-    ${EXEC} ./vendor/bin/pint --preset psr12 $c_pre $c_post
+    if [ "$userules" == "1" ]; then
+        ${EXEC} ./vendor/bin/php-cs-fixer $c_cmd --verbose $c_opts $c_files
+    else
+        ${EXEC} ./vendor/bin/php-cs-fixer $c_cmd --verbose --config ./.docker/php-cs-fixer.dist.php $c_opts $c_files
+    fi
 elif [ "$cmd" == "bo" ]; then
     start_if_down
     $0 build
@@ -852,7 +1007,6 @@ elif [ "$cmd" == "cleanup" ]; then
     if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
         $0 down
         remove_docker_images mariadb
-        remove_docker_images phpmyadmin
         remove_docker_images local.php
         remove_docker_images mailhog
         $DOCKER volume prune -f
