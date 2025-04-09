@@ -5,7 +5,7 @@ This script is used to create automatically docker containers for a full stack w
 * Apache Server with PHP, Composer, NPM
 * Mailhog server for testing mails
 * MariaDB (MySQL) server
-* PHPMyAdmin
+* AdMiner
 
 All your project files are still on your local machine and are linked into the containers. Therefore, the containers are reset every time they are started and you always have a fresh environment. Additionally, you can use your favorite IDE directly on your machine without transferring files back and forth to the containers.
 
