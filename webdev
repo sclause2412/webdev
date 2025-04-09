@@ -681,14 +681,15 @@ function write_github_action_file {
     if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
         write_phpcsfixer_file
         mkdir -p ./.github/workflows
+        GITBRANCH=$(git branch --show-current)
         cat <<EOF > ./.github/workflows/php-cs-fixer.yml
 name: Check & fix styling
 
 on:
   push:
-    branches: [main]
+    branches: [$GITBRANCH]
   pull_request:
-    branches: [main]
+    branches: [$GITBRANCH]
 
 jobs:
   php-cs-fixer:
