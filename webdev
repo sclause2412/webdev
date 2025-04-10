@@ -126,6 +126,35 @@ function select_option {
     return $selected
 }
 
+function confirm {
+    QUEST=$1
+    DEFAULT=${2:0:1}
+    if [ -n "$QUEST" ]; then
+        echo $QUEST
+    else
+        echo "Continue?"
+    fi
+    if [ "$DEFAULT" == "N" ] || [ "$DEFAULT" == "n" ]; then
+        options=("No" "Yes")
+        select_option "${options[@]}"
+        YN=$?
+        if [ $YN -eq 0 ]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        options=("Yes" "No")
+        select_option "${options[@]}"
+        YN=$?
+        if [ $YN -eq 0 ]; then
+            return 1
+        else
+            return 0
+        fi
+    fi
+}
+
 function display_help {
     echo "${YELLOW}Usage${NC}"
     echo "  ${ME} COMMAND [arguments]"
@@ -578,10 +607,8 @@ function write_phpcsfixer_file {
     echo "${YELLOW}|${NC} projects it may corrupt files.                         ${YELLOW}|${NC}"
     echo "${YELLOW}+--------------------------------------------------------+${NC}"
     echo
-    echo -n "Do you want to use \"SuperIndentationFixer\"? [y/n] "
-    read -n 1 YN
-    echo
-    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+    confirm "Do you want to use \"SuperIndentationFixer\"?" N
+    if [ $? -eq 1 ]; then
     cat <<EOF > ./.php-cs-fixer.dist.php
 <?php
 
@@ -713,10 +740,8 @@ function write_github_action_file {
         return
     fi
 
-    echo -n "Do you want to add an automatic formatting script for GitHub? [y/n] "
-    read -n 1 YN
-    echo
-    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+    confirm "Do you want to add an automatic formatting script for GitHub?"
+    if [ $? -eq 1 ]; then
         write_phpcsfixer_file
         mkdir -p ./.github/workflows
         GITBRANCH=$(git branch --show-current)
@@ -766,10 +791,8 @@ function init_git_repo {
         return
     fi
 
-    echo -n "Do you want to use GIT for this project? [y/n] "
-    read -n 1 YN
-    echo
-    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+    confirm "Do you want to use GIT for this project?"
+    if [ $? -eq 1 ]; then
         options=("Create a new local repository" "Check out existing repository")
         select_option "${options[@]}"
         GIT=$?
@@ -805,17 +828,6 @@ function move_to_owner {
     cd ..
     rm -rf "$1"
 
-}
-
-function confirm {
-    echo "${YELLOW}All files will be deleted!${NC}"
-    echo -n "Are you sure to continue? [y/n] "
-    read -n 1 YN
-    echo
-    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
-        return
-    fi
-    exit
 }
 
 function get_webdev_dir {
@@ -868,10 +880,8 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
         if [ -n "$(ls -A $CURPATH)" ]; then
             echo "${RED}ATTENTION!${NC}"
             echo "This folder was not used for web development yet and is not empty."
-            echo -n "Do you want to continue using this folder? [y/n] "
-            read -n 1 YN
-            echo
-            if [ ! "$YN" == "y" ] && [ ! "$YN" == "Y" ]; then
+            confirm "Do you want to continue using this folder?" N
+            if [ $? -eq 0 ]; then
                 exit 1
             fi
         fi
@@ -1022,12 +1032,17 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
     select_option "${options[@]}"
     FW=$?
     if [ ! "$FW" == "0" ]; then
-        if [ -f ./.docker/framework ]; then
-            confirm
+        FILES=$(find -mindepth 1 -maxdepth 1 ! -name .git)
+        if [ -n "$FILES" ]; then
+            echo "${YELLOW}All files will be deleted!${NC}"
+            confirm "Do you want to continue?" N
+            if [ $? -eq 0 ]; then
+                exit 0
+            fi
             stop_if_up
             rm -rf ./.docker
+            find -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
         fi
-        find -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
     fi
     mkdir -p ./.docker
     touch ./.docker/framework
@@ -1099,10 +1114,8 @@ elif [ "$cmd" == "php" ] || [ "$cmd" == "p" ]; then
     fi
     get_php_version
     echo "Current PHP version: ${YELLOW}${PHP_VERSION}${NC}"
-    echo -n "Do you want to change? [y/n] "
-    read -n 1 YN
-    echo
-    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+    confirm "Do you want to change?"
+    if [ $? -eq 1 ]; then
         rm ./.docker/php/version
         $0 up
     fi
@@ -1114,10 +1127,8 @@ elif [ "$cmd" == "mysql" ] || [ "$cmd" == "m" ]; then
     fi
     get_mysql_version
     echo "Current MySQL type: ${YELLOW}${MYSQL_VERSION}${NC}"
-    echo -n "Do you want to change? [y/n] "
-    read -n 1 YN
-    echo
-    if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+    confirm "Do you want to change?"
+    if [ $? -eq 1 ]; then
         rm ./.docker/mysql
         $0 up
     fi
@@ -1175,10 +1186,8 @@ elif [ "$cmd" == "export" ] || [ "$cmd" == "x" ]; then
 elif [ "$cmd" == "format" ] || [ "$cmd" == "f" ]; then
     if [ ! -f ./vendor/bin/php-cs-fixer ]; then
         echo "${YELLOW}PHP CS Fixer not found${NC}"
-        echo -n "Do you want to install PHP CS Fixer? [y/n] "
-        read -n 1 YN
-        echo
-        if [ "$YN" == "y" ] || [ "$YN" == "Y" ]; then
+        confirm "Do you want to install PHP CS Fixer?"
+        if [ $? -eq 1 ]; then
             start_if_down
             ${EXEC} composer require friendsofphp/php-cs-fixer --dev
         fi
