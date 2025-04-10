@@ -533,7 +533,7 @@ echo 'sendmail_path = "/usr/bin/mhsendmail --smtp-addr=webdev-mailhog:1025"' >> 
 USER dev:dev
 WORKDIR /var/www/adminer
 RUN curl https://github.com/vrana/adminer/releases/download/v5.2.0/adminer-5.2.0.php -L -o adminer.php && \
-RUN curl https://raw.githubusercontent.com/sclause2412/webdev/main/adminer_autologin/autologin_5.2.0.php -L -o index.php
+curl https://raw.githubusercontent.com/sclause2412/webdev/main/adminer_autologin/autologin_5.2.0.php -L -o index.php
 WORKDIR /home/dev
 RUN echo PATH=\\\$PATH:\$(composer config --global home)/\$(composer config --global bin-dir) > .bashrc && \
 echo export PATH >> .bashrc
