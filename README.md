@@ -21,7 +21,7 @@ On your machine you need just docker and docker-compose. Read the docker manuals
 
 Here is an example for Arch Linux:
 ```
-sudo pacman -Sy docker docker-compose
+sudo pacman -Sy docker docker-compose docker-buildx
 sudo systemctl enable docker.socket
 sudo systemctl start docker.socket
 sudo usermod -aG docker <username>
