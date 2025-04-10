@@ -267,6 +267,27 @@ function remove_docker_images {
     done
 }
 
+function wait_for_database {
+    get_mysql_version
+    if [ ! "$MYSQL_VERSION" == "Persistent" ] && [ ! "$MYSQL_VERSION" == "Temporary" ]; then
+        return
+    fi
+
+    if [ $(docker inspect --format "{{.State.Health.Status}}" webdev-mysql) == "healthy" ]; then
+        return
+    fi
+
+    echo "Waiting for MySQL database..."
+    sleep 1
+
+    while true; do
+        if [ $(docker inspect --format "{{.State.Health.Status}}" webdev-mysql) == "healthy" ]; then
+            return
+        fi
+        sleep 1
+    done
+}
+
 function laravel_set_database {
     FRAMEWORK=$(cat ./.docker/framework)
     if [ ! "$FRAMEWORK" == "laravel" ]; then
@@ -281,16 +302,16 @@ function laravel_set_database {
         ${EXEC} sed -i 's/[# ]*DB_USERNAME=.*/DB_USERNAME=dev/' .env
         ${EXEC} sed -i 's/[# ]*DB_PASSWORD=.*/DB_PASSWORD=dev/' .env
     else
+        touch ./database/database.sqlite
         ${EXEC} sed -i 's/[# ]*DB_CONNECTION=.*/DB_CONNECTION=sqlite/' .env
         ${EXEC} sed -i 's/[# ]*DB_HOST=/# DB_HOST=/' .env
         ${EXEC} sed -i 's/[# ]*DB_PORT=/# DB_PORT=/' .env
         ${EXEC} sed -i 's/[# ]*DB_DATABASE=/# DB_DATABASE=/' .env
         ${EXEC} sed -i 's/[# ]*DB_USERNAME=/# DB_USERNAME=/' .env
         ${EXEC} sed -i 's/[# ]*DB_PASSWORD=/# DB_PASSWORD=/' .env
-        if [ ! -f ./database/database.sqlite ]; then
-            ${EXEC} php artisan migrate
-        fi
     fi
+    wait_for_database
+    ${EXEC} php artisan migrate
 }
 
 function write_docker_compose {
@@ -357,6 +378,10 @@ EOF
     container_name: webdev-mysql
     image: mariadb
     restart: "no"
+    healthcheck:
+      test: "mariadb-admin ping --silent"
+      interval: 10s
+      start_period: 5s
     ports:
       - 3306:3306
     environment:
@@ -881,6 +906,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
                 ${EXEC} sed -i 's/MAIL_USERNAME=.*/MAIL_USERNAME=null/' .env
                 ${EXEC} sed -i 's/MAIL_PASSWORD=.*/MAIL_PASSWORD=null/' .env
                 ${EXEC} sed -i 's/MAIL_ENCRYPTION=.*/MAIL_ENCRYPTION=null/' .env
+                wait_for_database
                 exit 0
             fi
         elif [ -f ./public/wp-config.php ]; then
@@ -890,6 +916,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
             echo
             if [ "$YN" == 'y' ] || [ "$YN" == 'Y' ]; then
                 echo wordpress > ./.docker/framework
+                wait_for_database
                 exit 0
             fi
         elif [ -f ./js/reveal.js ]; then
@@ -916,12 +943,14 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
     write_github_action_file
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
-        laravel_set_database
+        wait_for_database
+        get_mysql_version
         if [ "$MYSQL_VERSION" == "Temporary" ]; then
-            echo "${YELLOW}Creating temporary database...${NC}"
-            sleep 30
             ${EXEC} php artisan migrate
         fi
+    fi
+    if [ "$FRAMEWORK" == "wordpress" ]; then
+        wait_for_database
     fi
 elif [ "$cmd" == "down" ] || [ "$cmd" == "d" ]; then
     echo "${YELLOW}Stopping webdev containers...${NC}"
@@ -979,6 +1008,7 @@ elif [ "$cmd" == "open" ] || [ "$cmd" == "o" ]; then
     fi
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
+        wait_for_database
         xdg-open http://localhost:81 2>/dev/null >/dev/null
         sleep 5
     fi
@@ -1008,7 +1038,6 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         echo skeleton > ./.docker/framework
     fi
     if [ "$FW" == "2" ]; then
-        get_mysql_version
         get_php_version
         ${EXEC} composer global require laravel/installer
         ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database=sqlite --pest --npm lv_temp
@@ -1019,20 +1048,12 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         fi
         move_to_owner lv_temp git
         echo laravel > ./.docker/framework
-        laravel_set_database
-        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
-            if [ -f './database/database.sqlite' ]; then
-                rm './database/database.sqlite'
-            fi
-        else
-            touch './database/database.sqlite'
-        fi
         ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=webdev-mailhog/' .env
         ${EXEC} sed -i 's/MAIL_PORT=.*/MAIL_PORT=1025/' .env
         ${EXEC} sed -i 's/MAIL_USERNAME=.*/MAIL_USERNAME=null/' .env
         ${EXEC} sed -i 's/MAIL_PASSWORD=.*/MAIL_PASSWORD=null/' .env
         ${EXEC} sed -i 's/MAIL_ENCRYPTION=.*/MAIL_ENCRYPTION=null/' .env
-        ${EXEC} php artisan migrate
+        laravel_set_database
     fi
     if [ "$FW" == "3" ]; then
         get_mysql_version
@@ -1105,6 +1126,7 @@ elif [ "$cmd" == "run" ] || [ "$cmd" == "r" ]; then
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
         start_if_down
+        wait_for_database
         ${EXEC} php artisan migrate
         if [ -d ./node_modules/vite ]; then
             ${EXEC} npm run dev -- --host
@@ -1117,6 +1139,7 @@ elif [ "$cmd" == "build" ] || [ "$cmd" == "b" ]; then
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
         start_if_down
+        wait_for_database
         ${EXEC} php artisan migrate
         if [ -d ./node_modules/vite ]; then
             ${EXEC} npm run build
