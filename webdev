@@ -44,6 +44,20 @@ if [ ! "$ret" == "0" ]; then
     exit 1
 fi
 
+docker buildx version >/dev/null 2>/dev/null
+ret=$?
+if [ ! "$ret" == "0" ]; then
+    echo
+    echo "${BOLD}${BLINK}${YELLOW}ERROR${NC}"
+    echo "${YELLOW}buildx${NC} is missing but highly recommended."
+    echo
+    echo -n "Do you want to continue without buildx? [y/n] "
+    read -n 1 YN
+    echo
+    if [ ! "$YN" == "y" ] && [ ! "$YN" == "Y" ]; then
+        exit 0
+    fi
+fi
 
 
 # Renders a text based list of options that can be selected by the
