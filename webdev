@@ -48,7 +48,7 @@ docker buildx version >/dev/null 2>/dev/null
 ret=$?
 if [ ! "$ret" == "0" ]; then
     echo
-    echo "${BOLD}${BLINK}${YELLOW}ERROR${NC}"
+    echo "${BOLD}${BLINK}${YELLOW}WARNING${NC}"
     echo "${YELLOW}buildx${NC} is missing but highly recommended."
     echo
     echo -n "Do you want to continue without buildx? [y/n] "
