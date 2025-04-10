@@ -874,12 +874,13 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
                 if [ ! -f .env ]; then
                     cp .env.example .env
                 fi
+                echo laravel > ./.docker/framework
+                laravel_set_database
                 ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=webdev-mailhog/' .env
                 ${EXEC} sed -i 's/MAIL_PORT=.*/MAIL_PORT=1025/' .env
                 ${EXEC} sed -i 's/MAIL_USERNAME=.*/MAIL_USERNAME=null/' .env
                 ${EXEC} sed -i 's/MAIL_PASSWORD=.*/MAIL_PASSWORD=null/' .env
                 ${EXEC} sed -i 's/MAIL_ENCRYPTION=.*/MAIL_ENCRYPTION=null/' .env
-                echo laravel > ./.docker/framework
                 exit 0
             fi
         elif [ -f ./public/wp-config.php ]; then
@@ -1010,24 +1011,28 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         get_mysql_version
         get_php_version
         ${EXEC} composer global require laravel/installer
-        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
-            ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database mysql lv_temp
-        else
-            ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database sqlite lv_temp
-        fi
+        ${EXEC} /home/dev/.config/composer/vendor/bin/laravel new --database=sqlite --pest --npm lv_temp
         if [ ! -d lv_temp ]; then
             stop_if_up
             echo "${RED}Installation failed. Try again.${NC}"
             exit 1
         fi
         move_to_owner lv_temp git
+        echo laravel > ./.docker/framework
+        laravel_set_database
+        if [ "$MYSQL_VERSION" == "Persistent" ] || [ "$MYSQL_VERSION" == "Temporary" ]; then
+            if [ -f './database/database.sqlite' ]; then
+                rm './database/database.sqlite'
+            fi
+        else
+            touch './database/database.sqlite'
+        fi
         ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=webdev-mailhog/' .env
         ${EXEC} sed -i 's/MAIL_PORT=.*/MAIL_PORT=1025/' .env
         ${EXEC} sed -i 's/MAIL_USERNAME=.*/MAIL_USERNAME=null/' .env
         ${EXEC} sed -i 's/MAIL_PASSWORD=.*/MAIL_PASSWORD=null/' .env
         ${EXEC} sed -i 's/MAIL_ENCRYPTION=.*/MAIL_ENCRYPTION=null/' .env
         ${EXEC} php artisan migrate
-        echo laravel > ./.docker/framework
     fi
     if [ "$FW" == "3" ]; then
         get_mysql_version
