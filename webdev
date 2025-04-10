@@ -536,6 +536,8 @@ docker-php-ext-enable xdebug
 EOF
     fi
 
+    get_adminer_autologin_file
+
     cat <<EOF >> ./.docker/php/Dockerfile
 RUN make-ssl-cert generate-default-snakeoil && \
 chmod 755 /etc/ssl/private && \
@@ -562,12 +564,82 @@ echo 'sendmail_path = "/usr/bin/mhsendmail --smtp-addr=webdev-mailhog:1025"' >> 
 USER dev:dev
 WORKDIR /var/www/adminer
 RUN curl https://github.com/vrana/adminer/releases/download/v5.2.0/adminer-5.2.0.php -L -o adminer.php && \
-curl https://raw.githubusercontent.com/sclause2412/webdev/main/adminer_autologin/autologin_5.2.0.php -L -o index.php
+echo "$ADMINER_AUTOLOGIN" > index.php
 WORKDIR /home/dev
 RUN echo PATH=\\\$PATH:\$(composer config --global home)/\$(composer config --global bin-dir) > .bashrc && \
 echo export PATH >> .bashrc
 WORKDIR /var/www/html
 EOF
+}
+
+function get_adminer_autologin_file {
+    IFS='' read -r -d '' ADMINER_AUTOLOGIN <<EOF
+<?php
+use function Adminer\get_nonce;
+class WebdevNoDatabase
+{
+    function loginForm()
+    {
+        echo '<h1>This environment has no database!</h1>';
+        return true;
+    }
+}
+class WebdevMySQL
+{
+    function loginForm()
+    {
+        ?>
+        <input type="hidden" name="auth[driver]" value="server">
+        <input type="hidden" name="auth[server]" value="webdev-mysql">
+        <input type="hidden" name="auth[username]" value="dev">
+        <input type="hidden" name="auth[password]" value="dev">
+        <input type="hidden" name="auth[db]" value="dev">
+        <input style="display: none;" type="submit" id="webdev-autologin">
+        <script nonce="<?= get_nonce() ?>">
+            window.setTimeout(function () {
+                document.getElementById("webdev-autologin").click();
+            }, 1000);
+        </script>
+        <?php
+        return true;
+    }
+}
+class WebdevSQLite
+{
+    function loginForm()
+    {
+        ?>
+        <input type="hidden" name="auth[driver]" value="sqlite">
+        <input type="hidden" name="auth[db]" value="../html/database/database.sqlite">
+        <input style="display: none;" type="submit" id="webdev-autologin">
+        <script nonce="<?= get_nonce() ?>">
+            window.setTimeout(function () {
+                document.getElementById("webdev-autologin").click();
+            }, 1000);
+        </script>
+        <?php
+        return true;
+    }
+    function login(\$login, \$password)
+    {
+        return true;
+    }
+}
+function adminer_object()
+{
+    if (file_exists('../html/.docker/mysql') && trim(file_get_contents('../html/.docker/mysql')) != 'None')
+        return new Adminer\Plugins([new WebdevMySQL]);
+    if (file_exists('../html/database/database.sqlite'))
+        return new Adminer\Plugins([new WebdevSQLite]);
+    return new Adminer\Plugins([new WebdevNoDatabase]);
+}
+include_once './adminer.php';
+EOF
+    eol=$'\n'
+    ADMINER_AUTOLOGIN=${ADMINER_AUTOLOGIN//$eol/\\n}
+    ADMINER_AUTOLOGIN=${ADMINER_AUTOLOGIN//\"/\\\"}
+    ADMINER_AUTOLOGIN=${ADMINER_AUTOLOGIN//\$/\\\$}
+
 }
 
 function write_vscode_files {
