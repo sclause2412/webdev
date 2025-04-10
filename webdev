@@ -1022,16 +1022,16 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
         $0 install
     fi
     write_github_action_file
+    get_mysql_version
+    if [ ! "$MYSQL_VERSION" == "None" ]; then
+        wait_for_database
+    fi
+
     FRAMEWORK=$(cat ./.docker/framework)
     if [ "$FRAMEWORK" == "laravel" ]; then
-        wait_for_database
-        get_mysql_version
         if [ "$MYSQL_VERSION" == "Temporary" ]; then
             ${EXEC} php artisan migrate
         fi
-    fi
-    if [ "$FRAMEWORK" == "wordpress" ]; then
-        wait_for_database
     fi
 elif [ "$cmd" == "down" ] || [ "$cmd" == "d" ]; then
     echo "${YELLOW}Stopping webdev containers...${NC}"
