@@ -501,6 +501,7 @@ EOF
     fi
 
     cat <<EOF >> ./.docker/php/Dockerfile
+RUN apt-get install -y libicu-dev
 RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
 php composer-setup.php && \
 php -r "unlink('composer-setup.php');" && \
@@ -521,6 +522,7 @@ RUN docker-php-ext-install iconv
 RUN docker-php-ext-install mbstring
 RUN docker-php-ext-install mysqli && docker-php-ext-install pdo_mysql
 RUN docker-php-ext-install pcntl && docker-php-ext-configure pcntl --enable-pcntl
+RUN docker-php-ext-install intl
 EOF
 
     if [ "${PHP_MAIN_VERSION}" == "5" ]; then
