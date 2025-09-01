@@ -984,6 +984,7 @@ if [ "$cmd" == "up" ] || [ "$cmd" == "u" ]; then
                 fi
                 echo laravel > ./.docker/framework
                 laravel_set_database
+                ${EXEC} sed -i 's/MAIL_MAILER=.*/MAIL_MAILER=smtp/' .env
                 ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=webdev-mailhog/' .env
                 ${EXEC} sed -i 's/MAIL_PORT=.*/MAIL_PORT=1025/' .env
                 ${EXEC} sed -i 's/MAIL_USERNAME=.*/MAIL_USERNAME=null/' .env
@@ -1136,6 +1137,7 @@ elif [ "$cmd" == "install" ] || [ "$cmd" == "i" ]; then
         fi
         move_to_owner lv_temp git
         echo laravel > ./.docker/framework
+        ${EXEC} sed -i 's/MAIL_MAILER=.*/MAIL_MAILER=smtp/' .env
         ${EXEC} sed -i 's/MAIL_HOST=.*/MAIL_HOST=webdev-mailhog/' .env
         ${EXEC} sed -i 's/MAIL_PORT=.*/MAIL_PORT=1025/' .env
         ${EXEC} sed -i 's/MAIL_USERNAME=.*/MAIL_USERNAME=null/' .env
