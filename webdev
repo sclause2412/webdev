@@ -240,7 +240,7 @@ function get_php_version {
     mkdir -p ./.docker/php
     if [ ! -f ./.docker/php/version ]; then
         echo "${GREEN}Select PHP version you want to use:${NC}"
-        options=("8.3" "8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1" "5.6")
+        options=("8.4" "8.3" "8.2" "8.1" "8.0" "7.4" "7.3" "7.2" "7.1" "5.6")
         select_option "${options[@]}"
         option=${options[$?]}
         echo $option > ./.docker/php/version
